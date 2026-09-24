@@ -60,7 +60,13 @@ yq -r ".items[] | select(.status == \"failed\" or .status == \"error\")
      ((.impacted_resources // []) | map((.kind // \"\") + \"/\" + (.name // \"\") + ((.namespace // \"\") | (select(. != \"\") | \" (\" + . + \")\") // \"\")) | join(\", \"))]
   | @tsv" "$file" | sed "s/\t/\x1f/g" |
 while IFS=$'\x1f' read -r st type name msg rem impacted; do
-  level=warning; [[ "$type" == "essential" || "$st" == "error" ]] && level=error
+  # An annotation's level follows the run's verdict: a run that met its
+  # objective (a certified CNF with a few failed tests) gets warnings, not a
+  # red mark on a green job. An errored test is always an error, and a failed
+  # essential test is an error once the run itself did not pass.
+  level=warning
+  [[ "$st" == "error" ]] && level=error
+  [[ "$status" != "passed" && "$type" == "essential" ]] && level=error
   echo "::${level} title=cnti-testsuite ${name:-unknown} ${st}::${msg}${impacted:+ — impacted: $impacted}${rem:+ — remediation: $rem}"
 done
 
