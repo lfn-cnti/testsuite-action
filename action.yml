@@ -67,7 +67,7 @@ inputs:
     required: false
     default: ""
   gist_badge_id:
-    description: "Optional: gist ID to publish a shields.io badge to (requires gist_badge_secret). Use badge_branch instead unless the badge must live outside this repository."
+    description: "Optional: gist ID to publish a shields.io badge (with the CNTi logo) to, from runs of the default branch (requires gist_badge_secret). For repositories whose workflows may not write to the repository; otherwise badge_branch needs no secret."
     required: false
     default: ""
   gist_badge_secret:
@@ -317,8 +317,16 @@ runs:
         GH_TOKEN: ${{ github.token }}
       run: bash "${{ github.action_path }}/scripts/publish_badge.sh"
 
+    # Like the branch badge: only a completed run on the default branch updates it,
+    # so a pull request never overwrites the badge.
+    - name: Read gist badge logo
+      id: gist_logo
+      if: always() && inputs.gist_badge_id != '' && (steps.run.outputs.exit_code == '0' || steps.run.outputs.exit_code == '1') && github.ref_name == github.event.repository.default_branch
+      shell: bash
+      run: echo "svg=$(tr -d '\n' < "${{ github.action_path }}/assets/cnti-symbol-color.svg")" >> "$GITHUB_OUTPUT"
+
     - name: Update gist badge
-      if: always() && inputs.gist_badge_id != '' && (steps.run.outputs.exit_code == '0' || steps.run.outputs.exit_code == '1')
+      if: always() && steps.gist_logo.outcome == 'success'
       uses: schneegans/dynamic-badges-action@e9a478b16159b4d31420099ba146cdc50f134483 # v1.7.0
       with:
         auth: ${{ inputs.gist_badge_secret }}
@@ -327,6 +335,10 @@ runs:
         label: "CNTi ${{ inputs.tests }}"
         message: "${{ steps.results.outputs.passed }}/${{ steps.results.outputs.max_passed }}"
         color: ${{ steps.results.outputs.status == 'passed' && 'brightgreen' || 'red' }}
+        # The colour symbol on a white label panel, like the branch badge; shields.io
+        # switches the label text to dark grey on a light panel.
+        labelColor: white
+        logoSvg: ${{ steps.gist_logo.outputs.svg }}
 
     - name: Enforce result
       if: always() && inputs.fail_on_failure == 'true'

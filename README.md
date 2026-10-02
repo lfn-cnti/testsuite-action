@@ -122,10 +122,23 @@ permissions:
 The badge shows the CNTi logo, the task and the result, e.g. `CNTi | cert | 16/19` (tests passed / maximum for the task that ran), green when the run met its objective. Pull requests never
 touch the badge; only runs on the default branch publish it.
 
-If the badge has to live outside the repository being tested, the gist variant is still
-available: create a public gist, a token with the `gist` scope stored as a repository secret, then:
+### Without write access to the repository
+
+Some projects don't let workflows write to their repository. The gist variant keeps the
+workflow at `permissions: contents: read`: the action writes the badge to a public gist
+instead, and the README shows it through shields.io: the CNTi symbol in colour on a white
+panel, the task and the result. Like the branch badge, only completed runs of the default branch update it.
+
+1. Create a public gist with one file, e.g. `cnti_badge.json` containing `{}`, and note its ID.
+2. Create a token that can write gists, e.g. a fine-grained personal access token with only
+   the account permission **Gists: Read and write**, and store it as a repository secret,
+   e.g. `CNTI_BADGE_GIST_TOKEN`. Tokens expire: when it does, the badge stops updating
+   until the secret is renewed.
 
 ```yaml
+permissions:
+  contents: read
+# ...
 - uses: lfn-cnti/testsuite-action@v1
   with:
     helm_chart_dir: charts/my-cnf
@@ -133,9 +146,9 @@ available: create a public gist, a token with the `gist` scope stored as a repos
     gist_badge_secret: ${{ secrets.CNTI_BADGE_GIST_TOKEN }}
 ```
 
-and embed
-`![CNTi](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/<user>/<gist id>/raw/cnti_badge.json)`
-in your README.
+```markdown
+![CNTi cert](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/<user>/<gist id>/raw/cnti_badge.json)
+```
 
 ## Requirements
 
