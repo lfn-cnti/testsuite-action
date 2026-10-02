@@ -327,7 +327,7 @@ runs:
 
     - name: Update gist badge
       if: always() && steps.gist_logo.outcome == 'success'
-      uses: schneegans/dynamic-badges-action@e9a478b16159b4d31420099ba146cdc50f134483 # v1.7.0
+      uses: schneegans/dynamic-badges-action@28b0fa8bdeb46170ac397105ece0c1fe58f68910 # v1.9.0
       with:
         auth: ${{ inputs.gist_badge_secret }}
         gistID: ${{ inputs.gist_badge_id }}
