@@ -82,8 +82,6 @@ jobs:
           evidence_repository: ${{ github.repository }}
           evidence_token: ${{ github.token }}
           evidence_branch: evidence-selftest
-          evidence_files: |
-            testsuite/example-cnfs/coredns/cnti-testsuite.yaml
           attest: "true"
       - name: Verify the attestation
         env:
@@ -108,11 +106,11 @@ jobs:
             get "$f" --jq .name
           done
           run_dir=$(get "" --jq '[.[]|select(.type=="dir" and .name!="latest")|.name]|sort|last')
-          for f in cnti-badge.svg cnti-badge.json cnti-evidence.json testsuite/example-cnfs/coredns/cnti-testsuite.yaml; do
+          for f in cnti-badge.svg cnti-badge.json cnti-evidence.json config/cnti-testsuite.yaml; do
             get "$run_dir/$f" --jq .name
           done
           get "$run_dir/cnti-evidence.json" --jq .content | base64 -d > published.json
-          jq -e '.predicate.cnti.published_files | length == 1' published.json
+          jq -e '.predicate.configuration | length >= 1' published.json
           jq -e '.predicate.cnti.run_url | endswith("/actions/runs/${{ github.run_id }}")' published.json
           # The statement is completed before it is signed or published: the
           # published one is the bundle's, byte for byte.

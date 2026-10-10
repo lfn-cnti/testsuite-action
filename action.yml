@@ -99,7 +99,7 @@ inputs:
     required: false
     default: ""
   evidence_files:
-    description: "Extra files to add to the bundle, one per line, relative to the workspace: typically the cnti-testsuite.yaml and the values files the run used. Published verbatim; keep secrets out of them (see evidence_exclude)."
+    description: "Extra files to add to the bundle, one per line, relative to the workspace. The configuration the CNF was installed from (the cnti-testsuite.yaml and its values files) is bundled by the suite already; name here only what the suite cannot know. Published verbatim; keep secrets out of them (see evidence_exclude)."
     required: false
     default: ""
   evidence_exclude:
@@ -108,6 +108,18 @@ inputs:
     default: |
       *secret*
       *credential*
+  evidence_oci_ref:
+    description: "Optional: the chart (or image) in a registry to attach the evidence to, e.g. ghcr.io/<owner>/charts/<chart>:<version> or a reference by digest. From runs of the default branch, the action signs the statement's Test Result predicate with the workflow's identity (cosign keyless) and attaches it to that reference as a cosign attestation, so whoever pulls the chart can pull its evidence from the same registry. Needs 'permissions: id-token: write' and push access to the registry (for ghcr.io: 'packages: write' and the default evidence_oci_token)."
+    required: false
+    default: ""
+  evidence_oci_token:
+    description: "Token to log in to the registry of evidence_oci_ref (user evidence_oci_username). Default: the job's GITHUB_TOKEN, which works for ghcr.io."
+    required: false
+    default: ${{ github.token }}
+  evidence_oci_username:
+    description: "User name for the registry login. Default: the actor running the job."
+    required: false
+    default: ${{ github.actor }}
   attest:
     description: "Attest the results file with GitHub artifact attestations (the statement's Test Result predicate, signed with the workflow's identity), from runs of the default branch. A reader verifies with `gh attestation verify <results file> --repo <owner>/<repo> --predicate-type https://in-toto.io/attestation/test-result/v0.1`. Needs 'permissions: id-token: write' and 'attestations: write'. The statement records provenance.method github-attestation."
     required: false
@@ -366,6 +378,27 @@ runs:
         EVIDENCE_EXCLUDE: ${{ inputs.evidence_exclude }}
       run: bash "${{ github.action_path }}/scripts/complete_statement.sh"
 
+    # The registry reference goes into the statement's provenance before anything
+    # signs it, so both signatures cover it; the attach step below removes it again
+    # if attaching fails.
+    - name: Plan registry attestation
+      if: always() && inputs.evidence_oci_ref != '' && steps.evidence.outputs.dir != '' && github.ref_name == github.event.repository.default_branch
+      shell: bash
+      env:
+        DIR: ${{ steps.evidence.outputs.dir }}
+        REF: ${{ inputs.evidence_oci_ref }}
+        # github.workflow_ref already carries owner/repo: <owner>/<repo>/.github/workflows/<file>@<ref>
+        IDENTITY: ${{ github.server_url }}/${{ github.workflow_ref }}
+      run: |
+        set -euo pipefail
+        # Method sigstore-keyless unless GitHub attests as well (that is stronger for a
+        # GitHub reader; the attestation step sets it). A statement from a suite without
+        # the provenance block gets one.
+        jq --arg ref "oci://${REF#oci://}" --arg id "$IDENTITY" \
+           '.predicate.cnti.provenance = ((.predicate.cnti.provenance // {}) + {files: (((.predicate.cnti.provenance // {}).files // []) + [$ref])})
+            | if (.predicate.cnti.provenance.method // "none") == "none" then .predicate.cnti.provenance.method = "sigstore-keyless" | .predicate.cnti.provenance.identity = $id else . end' \
+           "$DIR/cnti-evidence.json" > "$DIR/cnti-evidence.json.tmp" && mv "$DIR/cnti-evidence.json.tmp" "$DIR/cnti-evidence.json"
+
     # Provenance: GitHub attests the results file (the statement's subject) with the
     # statement's predicate, signed with this workflow's identity, so a reader can
     # verify where a published bundle came from without access to the repository.
@@ -382,7 +415,7 @@ runs:
       run: |
         set -euo pipefail
         subject=$(ls "$DIR"/cnti-testsuite-results-*.yml | head -n1)
-        jq --arg id "$IDENTITY" '.predicate.cnti.provenance = {method: "github-attestation", files: [], identity: $id}' \
+        jq --arg id "$IDENTITY" '.predicate.cnti.provenance = {method: "github-attestation", files: (.predicate.cnti.provenance.files // []), identity: $id}' \
           "$DIR/cnti-evidence.json" > "$DIR/cnti-evidence.json.tmp" && mv "$DIR/cnti-evidence.json.tmp" "$DIR/cnti-evidence.json"
         jq '.predicate' "$DIR/cnti-evidence.json" > "$RUNNER_TEMP/cnti-predicate.json"
         echo "subject=$subject" >> "$GITHUB_OUTPUT"
@@ -405,15 +438,56 @@ runs:
         DIR: ${{ steps.evidence.outputs.dir }}
         OUTCOME: ${{ steps.attest.outcome }}
         IDENTITY: ${{ github.repository }}
+        WORKFLOW_IDENTITY: ${{ github.server_url }}/${{ github.workflow_ref }}
       run: |
         set -euo pipefail
         if [[ "$OUTCOME" == "success" ]]; then
           echo "Attested $(basename "$(ls "$DIR"/cnti-testsuite-results-*.yml | head -n1)"); verify with: gh attestation verify <results file> --repo ${IDENTITY} --predicate-type https://in-toto.io/attestation/test-result/v0.1"
         else
-          jq '.predicate.cnti.provenance = {method: "none", files: [], identity: null}' \
+          jq --arg wid "$WORKFLOW_IDENTITY" '(.predicate.cnti.provenance.files // []) as $f
+              | .predicate.cnti.provenance = (if ($f | length) > 0 then {method: "sigstore-keyless", files: $f, identity: $wid} else {method: "none", files: [], identity: null} end)' \
             "$DIR/cnti-evidence.json" > "$DIR/cnti-evidence.json.tmp" && mv "$DIR/cnti-evidence.json.tmp" "$DIR/cnti-evidence.json"
-          echo "::warning::Attestation failed; the evidence is published unsigned (provenance.method none)"
+          echo "::warning::Attestation failed; the statement records $(jq -r .predicate.cnti.provenance.method "$DIR/cnti-evidence.json") as its provenance"
         fi
+
+    # The evidence next to the chart: the statement's predicate, signed with the
+    # workflow's identity (Sigstore keyless) and attached to the chart's registry
+    # reference as a cosign attestation, read back with cosign verify-attestation
+    # the way the suite's sbom_available test reads SBOM attestations. Only from the
+    # default branch; a failure leaves the bundle as it is, never fails the run.
+    - name: Install cosign
+      if: always() && inputs.evidence_oci_ref != '' && steps.evidence.outputs.dir != '' && github.ref_name == github.event.repository.default_branch
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+    - name: Attach evidence to the chart
+      id: oci
+      if: always() && inputs.evidence_oci_ref != '' && steps.evidence.outputs.dir != '' && github.ref_name == github.event.repository.default_branch
+      shell: bash
+      env:
+        DIR: ${{ steps.evidence.outputs.dir }}
+        REF: ${{ inputs.evidence_oci_ref }}
+        REGISTRY_TOKEN: ${{ inputs.evidence_oci_token }}
+        REGISTRY_USER: ${{ inputs.evidence_oci_username }}
+        # github.workflow_ref already carries owner/repo: <owner>/<repo>/.github/workflows/<file>@<ref>
+        IDENTITY: ${{ github.server_url }}/${{ github.workflow_ref }}
+      run: |
+        set -uo pipefail
+        ref=${REF#oci://}
+        registry=${ref%%/*}
+        jq '.predicate' "$DIR/cnti-evidence.json" > "$RUNNER_TEMP/cnti-predicate.json"
+        if [[ -n "$REGISTRY_TOKEN" ]]; then
+          printf '%s' "$REGISTRY_TOKEN" | cosign login "$registry" --username "$REGISTRY_USER" --password-stdin >/dev/null 2>&1 || echo "::notice::cosign login to $registry failed; trying with the existing credentials"
+        fi
+        if ! cosign attest --yes --type "https://in-toto.io/attestation/test-result/v0.1" --predicate "$RUNNER_TEMP/cnti-predicate.json" "$ref" 2>"$RUNNER_TEMP/cosign.err"; then
+          echo "::warning::Could not attach the evidence to $ref: $(tail -n 3 "$RUNNER_TEMP/cosign.err" | tr '\n' ' ')"
+          # The planned reference is not true: take it out of the statement.
+          jq --arg ref "oci://$ref" '.predicate.cnti.provenance.files -= [$ref]
+              | if .predicate.cnti.provenance.method == "sigstore-keyless" and (.predicate.cnti.provenance.files | length) == 0 then .predicate.cnti.provenance.method = "none" | .predicate.cnti.provenance.identity = null else . end' \
+             "$DIR/cnti-evidence.json" > "$DIR/cnti-evidence.json.tmp" && mv "$DIR/cnti-evidence.json.tmp" "$DIR/cnti-evidence.json"
+          exit 0
+        fi
+        digest=$(cosign triangulate --type digest "$ref" 2>/dev/null || true)
+        echo "Evidence attached to ${ref}${digest:+ (${digest})}; verify with: cosign verify-attestation --type https://in-toto.io/attestation/test-result/v0.1 --certificate-identity-regexp '^$IDENTITY' --certificate-oidc-issuer https://token.actions.githubusercontent.com $ref"
 
     - name: Uninstall CNF
       # A kind cluster created here dies with the job; only clean up clusters we were given.

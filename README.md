@@ -61,6 +61,8 @@ Existing cluster (self-hosted runner with `$KUBECONFIG` set):
 | `version` | `latest` | cnti-testsuite release tag, e.g. `v2.0.0` (v2.0.0 or newer) |
 | `binary_url` | | URL of a release tarball to install instead of `version`, e.g. a prerelease on a fork, to try a build before its release |
 | `attest` | `false` | attest the results file with GitHub artifact attestations, from the default branch (needs `id-token: write`, `attestations: write`) |
+| `evidence_oci_ref` | | chart or image reference in a registry to attach the signed evidence to (cosign attestation, keyless), from the default branch (needs `id-token: write` and push access) |
+| `evidence_oci_token`, `evidence_oci_username` | the job's token, the actor | registry login for `evidence_oci_ref`; the defaults work for ghcr.io with `packages: write` |
 | `cnf_config` | | Path to a `cnti-testsuite.yaml`; takes precedence over `helm_chart_dir` |
 | `helm_chart_dir` | | Local Helm chart directory; a minimal config is generated |
 | `tests` | `cert` | Task to run: `cert` (the essential tests), `workload`, `all`, `static`, a category or a single test |
@@ -163,8 +165,9 @@ repository you own, from runs of the default branch, with history:
 - `cnti-evidence.json`: an in-toto Statement with the Test Result predicate, the results file as
   its subject by digest, and a `cnti` block with the suite version, task, status, score, run
   date, and the names of the files published and withheld;
-- the files you name in `evidence_files`, typically the `cnti-testsuite.yaml` and the values
-  files the run used, so a reader sees what was set on top of the chart's defaults.
+- `config/`: the `cnti-testsuite.yaml` the CNF was installed from and every values file it names,
+  bundled by the suite itself, so a reader sees what was set on top of the chart's defaults;
+- any extra files you name in `evidence_files` (a README of the test setup, say).
 
 The bundle comes from the suite's own `cnti-testsuite evidence` (v2.3.0 or newer). Never published: the suite's
 logs (they stay in the job's artifact) and any file whose name matches `evidence_exclude`
@@ -182,9 +185,6 @@ excluded files.
     cnf_config: .github/cnti/cnti-testsuite.yaml
     evidence_repository: <owner>/cnti-evidence
     evidence_token: ${{ secrets.CNTI_EVIDENCE_TOKEN }}
-    evidence_files: |
-      .github/cnti/cnti-testsuite.yaml
-      .github/cnti/values.yaml
 ```
 
 Each run lands in `cnti/<cnf name>/<run date>/` of that repository, and `cnti/<cnf name>/latest/`
@@ -216,6 +216,55 @@ made from runs of the default branch only, and the statement in the bundle then 
 `provenance.method: github-attestation`. If the attestation fails, the bundle is published
 unsigned (`provenance.method: none`) and the job goes on. The suite's USAGE describes the
 other signing methods (Sigstore keyless, a project key) for CI systems that are not GitHub.
+
+#### Evidence next to the chart
+
+For a chart that lives in a registry, `evidence_oci_ref` attaches the evidence to it: the
+statement's predicate, signed with the workflow's identity (Sigstore keyless) and stored as a
+cosign attestation of the chart reference, so whoever pulls the chart pulls its evidence from
+the same place, the way the suite's own `sbom_available` test reads SBOM attestations.
+
+```yaml
+permissions:
+  contents: read
+  id-token: write
+  packages: write      # ghcr.io; another registry needs evidence_oci_token
+# ...
+- uses: lfn-cnti/testsuite-action@v1
+  with:
+    cnf_config: .github/cnti/cnti-testsuite.yaml
+    evidence_oci_ref: ghcr.io/<owner>/charts/<chart>:<version>
+```
+
+A reader verifies and reads it with cosign:
+
+```
+cosign verify-attestation --type https://in-toto.io/attestation/test-result/v0.1 \\
+  --certificate-identity-regexp '^https://github.com/<owner>/<repo>/' \\
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \\
+  ghcr.io/<owner>/charts/<chart>:<version> | jq -r .payload | base64 -d | jq .predicate
+```
+
+The reference must exist when the job runs: a chart the run installed from a registry (`registry_url`
+in the config), or a run placed after the publish job. Each run adds an attestation (cosign stores
+them as OCI referrers of the chart digest), so a chart carries its run history; the current verdict
+is the newest by `run_date`:
+
+```
+cosign verify-attestation --type https://in-toto.io/attestation/test-result/v0.1 \\
+  --certificate-identity-regexp '^https://github.com/<owner>/<repo>/' \\
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \\
+  ghcr.io/<owner>/charts/<chart>:<version> \\
+  | jq -s 'map(.payload | @base64d | fromjson) | max_by(.predicate.cnti.run_date) | .predicate'
+```
+
+A package first pushed by a private
+repository is private as well: make it public once (package settings) so that readers without
+access can pull the attestation. The statement records the reference in
+`provenance.files`, and `provenance.method: sigstore-keyless` with the workflow identity unless
+GitHub attestations were made too, which it then keeps. The reference is recorded before anything signs
+the statement, so the bundle's statement is the one both signatures cover; if attaching fails,
+the reference is taken out again.
 
 ## Requirements
 
