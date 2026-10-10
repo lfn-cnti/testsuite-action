@@ -51,7 +51,7 @@ git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 dest="${EVIDENCE_PATH:-cnti/${CNF_NAME:-cnf}/${RUN_DATE:-run}}"
 latest="$(dirname "$dest")/latest"
 mkdir -p "$dest" "$latest"
-# The whole bundle, the extra files included.
+# The whole bundle, including its config/ directory and any extra files.
 cp -r "$EVIDENCE_DIR"/. "$dest"/
 # The badge the README embeds: always the latest run of the default branch.
 cp "$EVIDENCE_DIR/cnti-badge.svg" "$EVIDENCE_DIR/cnti-badge.json" "$latest"/
