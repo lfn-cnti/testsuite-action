@@ -108,6 +108,10 @@ inputs:
     default: |
       *secret*
       *credential*
+  attest:
+    description: "Attest the results file with GitHub artifact attestations (the statement's Test Result predicate, signed with the workflow's identity), from runs of the default branch. A reader verifies with `gh attestation verify <results file> --repo <owner>/<repo> --predicate-type https://in-toto.io/attestation/test-result/v0.1`. Needs 'permissions: id-token: write' and 'attestations: write'. The statement records provenance.method github-attestation."
+    required: false
+    default: "false"
 
 outputs:
   status:
@@ -361,6 +365,55 @@ runs:
         EVIDENCE_FILES: ${{ inputs.evidence_files }}
         EVIDENCE_EXCLUDE: ${{ inputs.evidence_exclude }}
       run: bash "${{ github.action_path }}/scripts/complete_statement.sh"
+
+    # Provenance: GitHub attests the results file (the statement's subject) with the
+    # statement's predicate, signed with this workflow's identity, so a reader can
+    # verify where a published bundle came from without access to the repository.
+    # The provenance block is written into the statement first, so the signed
+    # predicate carries it. Only from the default branch, like the badge; a failure
+    # resets the block to method none and never fails the run.
+    - name: Prepare attestation
+      id: attest_input
+      if: always() && inputs.attest == 'true' && steps.evidence.outputs.dir != '' && github.ref_name == github.event.repository.default_branch
+      shell: bash
+      env:
+        DIR: ${{ steps.evidence.outputs.dir }}
+        IDENTITY: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+        subject=$(ls "$DIR"/cnti-testsuite-results-*.yml | head -n1)
+        jq --arg id "$IDENTITY" '.predicate.cnti.provenance = {method: "github-attestation", files: [], identity: $id}' \
+          "$DIR/cnti-evidence.json" > "$DIR/cnti-evidence.json.tmp" && mv "$DIR/cnti-evidence.json.tmp" "$DIR/cnti-evidence.json"
+        jq '.predicate' "$DIR/cnti-evidence.json" > "$RUNNER_TEMP/cnti-predicate.json"
+        echo "subject=$subject" >> "$GITHUB_OUTPUT"
+        echo "predicate=$RUNNER_TEMP/cnti-predicate.json" >> "$GITHUB_OUTPUT"
+
+    - name: Attest results
+      id: attest
+      if: always() && steps.attest_input.outcome == 'success'
+      continue-on-error: true
+      uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+      with:
+        subject-path: ${{ steps.attest_input.outputs.subject }}
+        predicate-type: https://in-toto.io/attestation/test-result/v0.1
+        predicate-path: ${{ steps.attest_input.outputs.predicate }}
+
+    - name: Check attestation
+      if: always() && steps.attest_input.outcome == 'success'
+      shell: bash
+      env:
+        DIR: ${{ steps.evidence.outputs.dir }}
+        OUTCOME: ${{ steps.attest.outcome }}
+        IDENTITY: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+        if [[ "$OUTCOME" == "success" ]]; then
+          echo "Attested $(basename "$(ls "$DIR"/cnti-testsuite-results-*.yml | head -n1)"); verify with: gh attestation verify <results file> --repo ${IDENTITY} --predicate-type https://in-toto.io/attestation/test-result/v0.1"
+        else
+          jq '.predicate.cnti.provenance = {method: "none", files: [], identity: null}' \
+            "$DIR/cnti-evidence.json" > "$DIR/cnti-evidence.json.tmp" && mv "$DIR/cnti-evidence.json.tmp" "$DIR/cnti-evidence.json"
+          echo "::warning::Attestation failed; the evidence is published unsigned (provenance.method none)"
+        fi
 
     - name: Uninstall CNF
       # A kind cluster created here dies with the job; only clean up clusters we were given.
