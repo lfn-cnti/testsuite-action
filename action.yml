@@ -19,7 +19,7 @@ inputs:
     required: false
     default: ""
   tests:
-    description: "Task to run: cert (default), workload, all, static, a category (e.g. security) or a single test name."
+    description: "Task to run: cert (default; the essential tests), workload, all, static, a category (e.g. security) or a single test name."
     required: false
     default: "cert"
   extra_args:
@@ -105,7 +105,7 @@ outputs:
     description: "Maximum points the run could have scored."
     value: ${{ steps.results.outputs.maximum_points }}
   criteria:
-    description: "Pass criterion of the run as compact JSON (e.g. the cert essential threshold), empty when the task has none."
+    description: "Pass criterion of the run as compact JSON (e.g. the essential-tests threshold of cert), empty when the task has none."
     value: ${{ steps.results.outputs.criteria }}
   results_file:
     description: "Path to the results YAML of this run."
@@ -332,7 +332,8 @@ runs:
         auth: ${{ inputs.gist_badge_secret }}
         gistID: ${{ inputs.gist_badge_id }}
         filename: ${{ inputs.gist_badge_filename }}
-        label: "CNTi ${{ inputs.tests }}"
+        # The badge names the test set: the cert task runs the essential tests.
+        label: "CNTi ${{ inputs.tests == 'cert' && 'essential' || inputs.tests }}"
         message: "${{ steps.results.outputs.passed }}/${{ steps.results.outputs.max_passed }}"
         color: ${{ steps.results.outputs.status == 'passed' && 'brightgreen' || 'red' }}
         # The colour symbol on a white label panel, like the branch badge; shields.io

@@ -5,9 +5,9 @@ GitHub Actions job, so every pull request to your Helm chart or manifests is che
 cloud native best practices.
 
 By default the action creates a 3-node [kind](https://kind.sigs.k8s.io/) cluster, installs the
-latest `cnti-testsuite` release (v2.0.0 or newer), deploys your CNF and runs the certification (`cert`) test set.
+latest `cnti-testsuite` release (v2.0.0 or newer), deploys your CNF and runs the essential test set (the `cert` task).
 It writes a job summary, annotates failed tests, uploads the results YAML as an artifact and
-fails the job when the CNF does not meet the certification objective.
+fails the job when the CNF does not meet the objective of the run (for the essential tests: 15 of 19 passed).
 
 ## Usage
 
@@ -61,7 +61,7 @@ Existing cluster (self-hosted runner with `$KUBECONFIG` set):
 | `version` | `latest` | cnti-testsuite release tag, e.g. `v2.0.0` (v2.0.0 or newer) |
 | `cnf_config` | | Path to a `cnti-testsuite.yaml`; takes precedence over `helm_chart_dir` |
 | `helm_chart_dir` | | Local Helm chart directory; a minimal config is generated |
-| `tests` | `cert` | Task to run: `cert`, `workload`, `all`, `static`, a category or a single test |
+| `tests` | `cert` | Task to run: `cert` (the essential tests), `workload`, `all`, `static`, a category or a single test |
 | `extra_args` | | Extra arguments, e.g. `--strict`, `--poc`, `--skip <test>` |
 | `log_level` | | Suite log level (`debug`, `info`, …), exported as `CNTI_TESTSUITE_LOG_LEVEL` |
 | `install_timeout` | | Seconds to wait for the CNF during `cnf_install` (`--timeout`) |
@@ -88,7 +88,7 @@ One of `cnf_config` or `helm_chart_dir` is required.
 | `passed` / `max_passed` | Tests passed / maximum |
 | `essential_passed` / `essential_max_passed` | Essential tests passed / maximum |
 | `points` / `maximum_points` | Points scored / maximum |
-| `criteria` | Pass criterion of the run as compact JSON (e.g. the `cert` threshold); empty when the task has none |
+| `criteria` | Pass criterion of the run as compact JSON (e.g. the essential-tests threshold of `cert`); empty when the task has none |
 | `results_file` | Path to the results YAML |
 
 ```yaml
@@ -116,10 +116,10 @@ permissions:
 ```
 
 ```markdown
-![CNTi cert](https://github.com/<owner>/<repo>/raw/badges/cnti-badge.svg)
+![CNTi essential](https://github.com/<owner>/<repo>/raw/badges/cnti-badge.svg)
 ```
 
-The badge shows the CNTi logo, the task and the result, e.g. `CNTi | cert | 16/19` (tests passed / maximum for the task that ran), green when the run met its objective. Pull requests never
+The badge shows the CNTi logo, the test set and the result, e.g. `CNTi essential 16/19` (tests passed / maximum for the task that ran; the `cert` task's set is named `essential`, any other task by its name), green when the run met its objective. Pull requests never
 touch the badge; only runs on the default branch publish it.
 
 ### Without write access to the repository
@@ -147,7 +147,7 @@ permissions:
 ```
 
 ```markdown
-![CNTi cert](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/<user>/<gist id>/raw/cnti_badge.json)
+![CNTi essential](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/<user>/<gist id>/raw/cnti_badge.json)
 ```
 
 ## Requirements
@@ -155,7 +155,7 @@ permissions:
 - `ubuntu-latest`, or any Linux x86_64/arm64 runner with Docker (for kind). `yq` is used to
   read the results file and is downloaded automatically when the runner lacks it. Helm is
   installed by the suite's own `setup` when missing.
-- A full `cert` run takes roughly 20–40 minutes depending on the CNF.
+- A full `cert` run (the essential tests) takes from a few minutes to about an hour depending on the CNF.
 
 ## Versioning
 

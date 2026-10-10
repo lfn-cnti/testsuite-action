@@ -30,8 +30,12 @@ if [[ "${BADGE_DRY_RUN:-}" != "1" ]]; then
   fi
 fi
 
-label="CNTi ${TESTS:-cert}"          # shields/aria text; the SVG shows the wordmark + task
-svg_label="${TESTS:-cert}"
+# The badge names the test set, not the task: the cert task runs the essential
+# tests, so its badge reads "CNTi essential". Any other task is named as it is.
+badge_set="${TESTS:-cert}"
+[[ "$badge_set" == "cert" ]] && badge_set="essential"
+label="CNTi ${badge_set}"            # shields/aria text; the SVG shows the wordmark + set
+svg_label="${badge_set}"
 message="${PASSED:-?}/${MAX_PASSED:-?}"
 case "${STATUS:-error}" in
   passed) color="4c1"; color_name="brightgreen" ;;
