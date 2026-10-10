@@ -52,3 +52,54 @@ jobs:
           test -n "${{ steps.cnti.outputs.results_file }}"
           test "${{ steps.cnti.outputs.exit_code }}" = "${{ matrix.expect_exit }}"
           test -n "${{ steps.cnti.outputs.maximum_points }}"
+
+  # The evidence bundle pushed to a repository: this one, on the evidence-selftest
+  # branch, with the job's own token; the same clone, commit and push path as an
+  # external evidence repository. Not on pull requests, whose token cannot write.
+  evidence:
+    name: evidence (coredns)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Fetch example CNF
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: lfn-cnti/testsuite
+          path: testsuite
+          sparse-checkout: example-cnfs/coredns
+      - name: Run action
+        id: cnti
+        uses: ./
+        with:
+          cnf_config: testsuite/example-cnfs/coredns/cnti-testsuite.yaml
+          log_level: info
+          fail_on_failure: false
+          evidence_repository: ${{ github.repository }}
+          evidence_token: ${{ github.token }}
+          evidence_branch: evidence-selftest
+          evidence_files: |
+            testsuite/example-cnfs/coredns/cnti-testsuite.yaml
+      - name: Check the published bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REF: evidence-selftest
+        run: |
+          set -euo pipefail
+          get() { gh api "repos/$REPO/contents/cnti/coredns/$1?ref=$REF" "${@:2}"; }
+          for f in latest/cnti-badge.svg latest/cnti-badge.json; do
+            get "$f" --jq .name
+          done
+          run_dir=$(get "" --jq '[.[]|select(.type=="dir" and .name!="latest")|.name]|sort|last')
+          for f in cnti-badge.svg cnti-badge.json cnti-evidence.json testsuite/example-cnfs/coredns/cnti-testsuite.yaml; do
+            get "$run_dir/$f" --jq .name
+          done
+          get "$run_dir/cnti-evidence.json" --jq .content | base64 -d > published.json
+          jq -e '.predicate.cnti.published_files | length == 1' published.json
+          jq -e '.predicate.cnti.run_url | endswith("/actions/runs/${{ github.run_id }}")' published.json
+          # The statement is completed before it is signed or published: the
+          # published one is the bundle's, byte for byte.
+          cmp published.json cnti/evidence/cnti-evidence.json

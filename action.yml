@@ -10,6 +10,10 @@ inputs:
     description: "cnti-testsuite release tag to use (e.g. v2.0.0), v2.0.0 or newer. Default: latest release."
     required: false
     default: "latest"
+  binary_url:
+    description: "Optional: URL of a cnti-testsuite release tarball (cnti-testsuite-<tag>.tar.gz) to install instead of `version`, e.g. a prerelease on a fork, to try a build before its release. The tag is taken from the file name."
+    required: false
+    default: ""
   cnf_config:
     description: "Path to a cnti-testsuite.yaml describing the CNF. Takes precedence over helm_chart_dir."
     required: false
@@ -55,7 +59,7 @@ inputs:
     required: false
     default: "true"
   upload_results:
-    description: "Upload the results directory as a workflow artifact."
+    description: "Upload the results directory and the evidence bundle (cnti/evidence, when written) as a workflow artifact, so every run's full evidence can be downloaded from the run page for the artifact retention period, badge or no badge."
     required: false
     default: "true"
   artifact_name:
@@ -63,7 +67,7 @@ inputs:
     required: false
     default: "cnti-testsuite-results"
   badge_branch:
-    description: "Publish a results badge (tests passed / maximum, coloured by the verdict; cnti-badge.svg and cnti-badge.json in shields.io endpoint format) to this orphan branch of the repository with the job's GITHUB_TOKEN - no secret needed, but the job needs 'permissions: contents: write'. Only runs on the default branch. Empty: off."
+    description: "Publish the badge (cnti-badge.svg and cnti-badge.json in shields.io endpoint format, written by cnti-testsuite evidence, v2.3.0 or newer) to this orphan branch of the repository with the job's GITHUB_TOKEN - no secret needed, but the job needs 'permissions: contents: write'. Only runs on the default branch. Empty: off."
     required: false
     default: ""
   gist_badge_id:
@@ -78,6 +82,32 @@ inputs:
     description: "Filename of the badge inside the gist."
     required: false
     default: "cnti_badge.json"
+  evidence_repository:
+    description: "Optional: owner/repo of a public repository the evidence bundle is pushed to (the badge, the results file and its JUnit report, the in-toto statement, and evidence_files), from runs of the default branch. Lets a private repository show its badge and the evidence behind it. Needs evidence_token."
+    required: false
+    default: ""
+  evidence_token:
+    description: "Token with contents write on evidence_repository only (a fine-grained personal access token)."
+    required: false
+    default: ""
+  evidence_branch:
+    description: "Branch of evidence_repository to push to."
+    required: false
+    default: "main"
+  evidence_path:
+    description: "Directory in evidence_repository for this run's bundle; its parent gets a latest/ copy of the badge. Default: cnti/<cnf name>/<run date>."
+    required: false
+    default: ""
+  evidence_files:
+    description: "Extra files to add to the bundle, one per line, relative to the workspace: typically the cnti-testsuite.yaml and the values files the run used. Published verbatim; keep secrets out of them (see evidence_exclude)."
+    required: false
+    default: ""
+  evidence_exclude:
+    description: "Glob patterns (one per line, matched against the file name) of evidence_files never published; they are listed as withheld in the statement."
+    required: false
+    default: |
+      *secret*
+      *credential*
 
 outputs:
   status:
@@ -119,19 +149,27 @@ runs:
       shell: bash
       env:
         REQUESTED: ${{ inputs.version }}
+        BINARY_URL: ${{ inputs.binary_url }}
         GH_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
-        if [[ "$REQUESTED" == "latest" || -z "$REQUESTED" ]]; then
+        if [[ -n "$BINARY_URL" ]]; then
+          # cnti-testsuite-<tag>.tar.gz: the tag names the build, and the cache key.
+          tag=$(basename "$BINARY_URL" .tar.gz); tag=${tag#cnti-testsuite-}
+          url="$BINARY_URL"
+        elif [[ "$REQUESTED" == "latest" || -z "$REQUESTED" ]]; then
           tag=$(gh api repos/lfn-cnti/testsuite/releases/latest --jq .tag_name)
+          url="https://github.com/lfn-cnti/testsuite/releases/download/${tag}/cnti-testsuite-${tag}.tar.gz"
         else
           tag="$REQUESTED"
+          url="https://github.com/lfn-cnti/testsuite/releases/download/${tag}/cnti-testsuite-${tag}.tar.gz"
         fi
         case "$tag" in
           v0.*|v1.*) echo "::error::cnti-testsuite $tag is not supported: this action needs v2.0.0 or newer (binary, config and results contract changed in 2.0.0)"; exit 1 ;;
         esac
         echo "tag=$tag" >> "$GITHUB_OUTPUT"
-        echo "Using cnti-testsuite $tag"
+        echo "url=$url" >> "$GITHUB_OUTPUT"
+        echo "Using cnti-testsuite $tag ($url)"
 
     - name: Cache cnti-testsuite binary
       id: cache
@@ -144,12 +182,11 @@ runs:
       if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
       env:
-        TAG: ${{ steps.version.outputs.tag }}
+        URL: ${{ steps.version.outputs.url }}
       run: |
         set -euo pipefail
         mkdir -p ~/.cnti-testsuite
-        url="https://github.com/lfn-cnti/testsuite/releases/download/${TAG}/cnti-testsuite-${TAG}.tar.gz"
-        curl --fail --silent --show-error -L "$url" -o /tmp/cnti-testsuite.tar.gz
+        curl --fail --silent --show-error -L "$URL" -o /tmp/cnti-testsuite.tar.gz
         tar -C ~/.cnti-testsuite -xf /tmp/cnti-testsuite.tar.gz
         chmod a+x ~/.cnti-testsuite/cnti-testsuite
 
@@ -225,6 +262,9 @@ runs:
         if [[ -n "$CNF_CONFIG" ]]; then
           [[ -f "$CNF_CONFIG" ]] || { echo "::error::cnf_config '$CNF_CONFIG' not found"; exit 1; }
           echo "path=$CNF_CONFIG" >> "$GITHUB_OUTPUT"
+          # The CNF's name, for the evidence path: the first deployment in the config.
+          name=$(yq -r '(.deployments.helm_charts // [])[0].name // (.deployments.helm_dirs // [])[0].name // (.deployments.manifests // [])[0].name // ""' "$CNF_CONFIG" 2>/dev/null || true)
+          echo "cnf_name=${name:-cnf}" >> "$GITHUB_OUTPUT"
         elif [[ -n "$HELM_CHART_DIR" ]]; then
           [[ -f "$HELM_CHART_DIR/Chart.yaml" ]] || { echo "::error::helm_chart_dir '$HELM_CHART_DIR' has no Chart.yaml"; exit 1; }
           cfg="$RUNNER_TEMP/cnti-testsuite.yaml"
@@ -237,6 +277,7 @@ runs:
               helm_directory: "$(realpath "$HELM_CHART_DIR")"
         CFG
           echo "path=$cfg" >> "$GITHUB_OUTPUT"
+          echo "cnf_name=$(basename "$(realpath "$HELM_CHART_DIR")")" >> "$GITHUB_OUTPUT"
         else
           echo "::error::Either cnf_config or helm_chart_dir must be set"; exit 1
         fi
@@ -290,30 +331,60 @@ runs:
         RUN_EXIT_CODE: ${{ steps.run.outputs.exit_code }}
       run: bash "${{ github.action_path }}/scripts/read_results.sh"
 
+    # The bundle a project publishes next to its badge, from the suite's own
+    # `evidence` subcommand (cnti-testsuite v2.3.0 or newer): the badge (SVG,
+    # shields.io JSON), the in-toto Test Result statement, the results file and
+    # its JUnit report.
+    - name: Write evidence
+      id: evidence
+      if: always() && steps.results.outputs.results_file != ''
+      shell: bash
+      run: |
+        set -uo pipefail
+        dir=cnti/evidence
+        if ! cnti-testsuite evidence --output-dir "$dir"; then
+          echo "::warning::cnti-testsuite evidence failed: no badge or evidence for this run (the subcommand needs cnti-testsuite v2.3.0 or newer)"
+          exit 0
+        fi
+        echo "dir=$dir" >> "$GITHUB_OUTPUT"
+        echo "badge_label=$(jq -r .label "$dir/cnti-badge.json")" >> "$GITHUB_OUTPUT"
+        echo "badge_message=$(jq -r .message "$dir/cnti-badge.json")" >> "$GITHUB_OUTPUT"
+
+    # Everything the statement records goes in before anything signs or publishes
+    # it, so the published statement is the signed one.
+    - name: Complete statement
+      if: always() && steps.evidence.outputs.dir != ''
+      shell: bash
+      env:
+        EVIDENCE_DIR: ${{ steps.evidence.outputs.dir }}
+        EVIDENCE_REPOSITORY: ${{ inputs.evidence_repository }}
+        EVIDENCE_FILES: ${{ inputs.evidence_files }}
+        EVIDENCE_EXCLUDE: ${{ inputs.evidence_exclude }}
+      run: bash "${{ github.action_path }}/scripts/complete_statement.sh"
+
     - name: Uninstall CNF
       # A kind cluster created here dies with the job; only clean up clusters we were given.
       if: always() && inputs.create_kind_cluster != 'true'
       shell: bash
       run: cnti-testsuite cnf_uninstall || true
 
-    - name: Upload results
+    - name: Upload results and evidence
       if: always() && inputs.upload_results == 'true' && steps.results.outputs.results_file != ''
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: ${{ inputs.artifact_name }}
-        path: cnti/results/
+        path: |
+          cnti/results/
+          cnti/evidence/
         if-no-files-found: ignore
 
     - name: Publish badge
-      if: always() && inputs.badge_branch != '' && steps.results.outputs.status != ''
+      if: always() && inputs.badge_branch != '' && steps.evidence.outputs.dir != ''
       shell: bash
       env:
         BADGE_BRANCH: ${{ inputs.badge_branch }}
+        BADGE_SOURCE_DIR: ${{ steps.evidence.outputs.dir }}
         RUN_EXIT_CODE: ${{ steps.run.outputs.exit_code }}
-        TESTS: ${{ inputs.tests }}
-        STATUS: ${{ steps.results.outputs.status }}
-        PASSED: ${{ steps.results.outputs.passed }}
-        MAX_PASSED: ${{ steps.results.outputs.max_passed }}
         GH_TOKEN: ${{ github.token }}
       run: bash "${{ github.action_path }}/scripts/publish_badge.sh"
 
@@ -321,7 +392,7 @@ runs:
     # so a pull request never overwrites the badge.
     - name: Read gist badge logo
       id: gist_logo
-      if: always() && inputs.gist_badge_id != '' && (steps.run.outputs.exit_code == '0' || steps.run.outputs.exit_code == '1') && github.ref_name == github.event.repository.default_branch
+      if: always() && inputs.gist_badge_id != '' && steps.evidence.outputs.dir != '' && (steps.run.outputs.exit_code == '0' || steps.run.outputs.exit_code == '1') && github.ref_name == github.event.repository.default_branch
       shell: bash
       run: echo "svg=$(tr -d '\n' < "${{ github.action_path }}/assets/cnti-symbol-color.svg")" >> "$GITHUB_OUTPUT"
 
@@ -333,13 +404,28 @@ runs:
         gistID: ${{ inputs.gist_badge_id }}
         filename: ${{ inputs.gist_badge_filename }}
         # The badge names the test set: the cert task runs the essential tests.
-        label: "CNTi ${{ inputs.tests == 'cert' && 'essential' || inputs.tests }}"
-        message: "${{ steps.results.outputs.passed }}/${{ steps.results.outputs.max_passed }}"
+        label: ${{ steps.evidence.outputs.badge_label }}
+        message: ${{ steps.evidence.outputs.badge_message }}
         color: ${{ steps.results.outputs.status == 'passed' && 'brightgreen' || 'red' }}
         # The colour symbol on a white label panel, like the branch badge; shields.io
         # switches the label text to dark grey on a light panel.
         labelColor: white
         logoSvg: ${{ steps.gist_logo.outputs.svg }}
+
+    - name: Publish evidence
+      if: always() && inputs.evidence_repository != '' && steps.evidence.outputs.dir != ''
+      shell: bash
+      env:
+        EVIDENCE_DIR: ${{ steps.evidence.outputs.dir }}
+        EVIDENCE_REPOSITORY: ${{ inputs.evidence_repository }}
+        EVIDENCE_TOKEN: ${{ inputs.evidence_token }}
+        EVIDENCE_BRANCH: ${{ inputs.evidence_branch }}
+        EVIDENCE_PATH: ${{ inputs.evidence_path }}
+        CNF_NAME: ${{ steps.config.outputs.cnf_name }}
+        RUN_DATE: ${{ steps.results.outputs.run_date }}
+        RUN_EXIT_CODE: ${{ steps.run.outputs.exit_code }}
+        GH_TOKEN: ${{ github.token }}
+      run: bash "${{ github.action_path }}/scripts/publish_evidence.sh"
 
     - name: Enforce result
       if: always() && inputs.fail_on_failure == 'true'

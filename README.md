@@ -6,7 +6,7 @@ cloud native best practices.
 
 By default the action creates a 3-node [kind](https://kind.sigs.k8s.io/) cluster, installs the
 latest `cnti-testsuite` release (v2.0.0 or newer), deploys your CNF and runs the essential test set (the `cert` task).
-It writes a job summary, annotates failed tests, uploads the results YAML as an artifact and
+It writes a job summary, annotates failed tests, uploads the results and the evidence bundle as an artifact and
 fails the job when the CNF does not meet the objective of the run (for the essential tests: 15 of 19 passed).
 
 ## Usage
@@ -59,6 +59,7 @@ Existing cluster (self-hosted runner with `$KUBECONFIG` set):
 | Input | Default | Description |
 |---|---|---|
 | `version` | `latest` | cnti-testsuite release tag, e.g. `v2.0.0` (v2.0.0 or newer) |
+| `binary_url` | | URL of a release tarball to install instead of `version`, e.g. a prerelease on a fork, to try a build before its release |
 | `cnf_config` | | Path to a `cnti-testsuite.yaml`; takes precedence over `helm_chart_dir` |
 | `helm_chart_dir` | | Local Helm chart directory; a minimal config is generated |
 | `tests` | `cert` | Task to run: `cert` (the essential tests), `workload`, `all`, `static`, a category or a single test |
@@ -70,7 +71,7 @@ Existing cluster (self-hosted runner with `$KUBECONFIG` set):
 | `kind_version` | | kind version; empty uses the [helm/kind-action](https://github.com/helm/kind-action) default |
 | `kind_load_images` | | Local Docker images to load into the kind cluster (whitespace-separated) |
 | `fail_on_failure` | `true` | Fail the job when the run exits non-zero |
-| `upload_results` | `true` | Upload `cnti/results/` as an artifact |
+| `upload_results` | `true` | Upload `cnti/results/` and `cnti/evidence/` as an artifact: every run's full evidence is downloadable from the run page, whether or not a badge or an evidence repository is set |
 | `artifact_name` | `cnti-testsuite-results` | Artifact name |
 | `badge_branch` | | Publish `cnti-badge.svg`/`.json` to this orphan branch with `GITHUB_TOKEN` (needs `permissions: contents: write`); default branch only |
 | `gist_badge_id` | | Optional gist ID for a results badge on another repository |
@@ -119,7 +120,7 @@ permissions:
 ![CNTi essential](https://github.com/<owner>/<repo>/raw/badges/cnti-badge.svg)
 ```
 
-The badge shows the CNTi logo, the test set and the result, e.g. `CNTi essential 16/19` (tests passed / maximum for the task that ran; the `cert` task's set is named `essential`, any other task by its name), green when the run met its objective. Pull requests never
+The badge shows the CNTi logo, the test set and the result, e.g. `CNTi essential 16/19` (tests passed / maximum for the task that ran; the `cert` task's set is named `essential`, any other task by its name), green when the run met its objective. It is written by the suite itself (`cnti-testsuite evidence`, v2.3.0 or newer), so every CI system gets the same badge. Pull requests never
 touch the badge; only runs on the default branch publish it.
 
 ### Without write access to the repository
@@ -149,6 +150,52 @@ permissions:
 ```markdown
 ![CNTi essential](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/<user>/<gist id>/raw/cnti_badge.json)
 ```
+
+### From a private repository
+
+A private repository cannot serve its badge from a branch, and a badge alone is not evidence a
+reader can act on. With `evidence_repository` the action pushes the whole bundle to a public
+repository you own, from runs of the default branch, with history:
+
+- `cnti-badge.svg` and `cnti-badge.json`: the badge;
+- the results file and its JUnit report;
+- `cnti-evidence.json`: an in-toto Statement with the Test Result predicate, the results file as
+  its subject by digest, and a `cnti` block with the suite version, task, status, score, run
+  date, and the names of the files published and withheld;
+- the files you name in `evidence_files`, typically the `cnti-testsuite.yaml` and the values
+  files the run used, so a reader sees what was set on top of the chart's defaults.
+
+The bundle comes from the suite's own `cnti-testsuite evidence` (v2.3.0 or newer). Never published: the suite's
+logs (they stay in the job's artifact) and any file whose name matches `evidence_exclude`
+(`*secret*` and `*credential*` by default); withheld names are listed in the statement. A file in
+`evidence_files` is published verbatim: keep credentials in `--set` values from a secret, or in
+excluded files.
+
+1. Create a public repository for the evidence, e.g. `<owner>/cnti-evidence`.
+2. Create a fine-grained personal access token with **Contents: Read and write** on that one
+   repository, and store it as a secret of the private repository, e.g. `CNTI_EVIDENCE_TOKEN`.
+
+```yaml
+- uses: lfn-cnti/testsuite-action@v1
+  with:
+    cnf_config: .github/cnti/cnti-testsuite.yaml
+    evidence_repository: <owner>/cnti-evidence
+    evidence_token: ${{ secrets.CNTI_EVIDENCE_TOKEN }}
+    evidence_files: |
+      .github/cnti/cnti-testsuite.yaml
+      .github/cnti/values.yaml
+```
+
+Each run lands in `cnti/<cnf name>/<run date>/` of that repository, and `cnti/<cnf name>/latest/`
+always holds the badge of the newest run, for the README of the evidence repository or any
+public page:
+
+```markdown
+![CNTi essential](https://github.com/<owner>/cnti-evidence/raw/main/cnti/<cnf name>/latest/cnti-badge.svg)
+```
+
+Signing the statement, so a reader can verify it came from your pipeline, is a separate step
+(lfn-cnti/testsuite#2738).
 
 ## Requirements
 

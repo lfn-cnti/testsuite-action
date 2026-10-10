@@ -50,6 +50,15 @@ for k in passed max_passed essential_passed essential_max_passed total failed sk
   out "$k" "$(q ".summary.$k")"
 done
 out criteria "$(qj .summary.criteria)"
+# The run's date, from the timestamped results file name (the newest file the
+# latest.yml link points at), for the evidence path.
+real=$file
+[[ -L "$file" ]] && real=$(readlink -f "$file")
+if [[ "$(basename "$real")" =~ ([0-9]{4})([0-9]{2})([0-9]{2})-([0-9]{2})([0-9]{2})([0-9]{2}) ]]; then
+  out run_date "${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]}T${BASH_REMATCH[4]}${BASH_REMATCH[5]}${BASH_REMATCH[6]}Z"
+else
+  out run_date "$(date -u +%Y-%m-%dT%H%M%SZ)"
+fi
 
 # message/remediation may be a string or a list of strings: flatten to one line.
 STR='(. // "") | (select(tag == "!!seq") | map(tostring) | join("; ")) // tostring | sub("\n"; " ")'
