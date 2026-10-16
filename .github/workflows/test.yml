@@ -89,7 +89,8 @@ jobs:
           REF: evidence-selftest
         run: |
           set -euo pipefail
-          get() { gh api "repos/$REPO/contents/cnti/coredns/$1?ref=$REF" "${@:2}"; }
+          # No trailing slash for the directory itself: the contents API answers it with 404.
+          get() { gh api "repos/$REPO/contents/cnti/coredns${1:+/$1}?ref=$REF" "${@:2}"; }
           for f in latest/cnti-badge.svg latest/cnti-badge.json; do
             get "$f" --jq .name
           done
