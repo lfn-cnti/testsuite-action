@@ -1,0 +1,66 @@
+<?xml version="1.0"?>
+<testsuites name="cnti-testsuite" tests="19" failures="3" errors="0" skipped="0" time="140.887">
+  <properties>
+    <property name="name" value="cnti testsuite"/>
+    <property name="testsuite_version" value="v2.3.0"/>
+    <property name="schema_version" value="1"/>
+    <property name="status" value="passed"/>
+    <property name="command" value="/home/runner/.cnti-testsuite/cnti-testsuite cert"/>
+    <property name="exit_code" value="0"/>
+    <property name="summary.total" value="19"/>
+    <property name="summary.passed" value="16"/>
+    <property name="summary.failed" value="3"/>
+    <property name="summary.skipped" value="0"/>
+    <property name="summary.na" value="0"/>
+    <property name="summary.error" value="0"/>
+    <property name="summary.max_passed" value="19"/>
+    <property name="summary.essential_passed" value="16"/>
+    <property name="summary.essential_max_passed" value="19"/>
+    <property name="summary.points" value="1600"/>
+    <property name="summary.maximum_points" value="1900"/>
+    <property name="summary.criteria" value="[{&quot;group&quot;:&quot;cert&quot;,&quot;scope&quot;:&quot;essential&quot;,&quot;min_passed&quot;:15,&quot;min_ratio&quot;:null,&quot;declared_count&quot;:19,&quot;max_failed&quot;:null,&quot;passed_count&quot;:16,&quot;max_passed&quot;:19,&quot;failed_count&quot;:3,&quot;passed&quot;:true}]"/>
+  </properties>
+  <testsuite name="state" tests="1" failures="0" errors="0" skipped="0" time="32.559">
+    <testcase classname="state" name="node_drain" time="32.559"/>
+  </testsuite>
+  <testsuite name="security" tests="7" failures="1" errors="0" skipped="0" time="8.103">
+    <testcase classname="security" name="selinux_options" time="4.513"/>
+    <testcase classname="security" name="container_sock_mounts" time="0.779"/>
+    <testcase classname="security" name="privileged_containers" time="0.049"/>
+    <testcase classname="security" name="cpu_limits" time="0.002"/>
+    <testcase classname="security" name="memory_limits" time="0.001"/>
+    <testcase classname="security" name="non_root_containers" time="0.621">
+      <failure message="Found containers running as root user or with root group membership" type="essential">impacted: Deployment/coredns-coredns (cnti-default) container coredns: runs as uid 0 gid 0; spec.template.spec.containers[0].securityContext.runAsNonRoot should be true
+impacted: Deployment/coredns-coredns (cnti-default) container coredns: runs as uid 0 gid 0; spec.template.spec.containers[0].securityContext.runAsGroup should be 1000
+remediation: If your application does not need root privileges, make sure to define runAsNonRoot as true or explicitly set the runAsUser using ID 1000 or higher under the PodSecurityContext or container securityContext. In addition, set an explicit value for runAsGroup using ID 1000 or higher.</failure>
+    </testcase>
+    <testcase classname="security" name="hostpath_mounts" time="2.137"/>
+  </testsuite>
+  <testsuite name="configuration" tests="3" failures="0" errors="0" skipped="0" time="0.815">
+    <testcase classname="configuration" name="latest_tag" time="0.772"/>
+    <testcase classname="configuration" name="hostport_not_used" time="0.042"/>
+    <testcase classname="configuration" name="hardcoded_ip_addresses_in_k8s_runtime_configuration" time="0.001"/>
+  </testsuite>
+  <testsuite name="observability" tests="1" failures="0" errors="0" skipped="0" time="0.172">
+    <testcase classname="observability" name="log_output" time="0.172"/>
+  </testsuite>
+  <testsuite name="microservice" tests="4" failures="2" errors="0" skipped="0" time="71.164">
+    <testcase classname="microservice" name="single_process_type" time="0.862"/>
+    <testcase classname="microservice" name="zombie_handled" time="32.919">
+      <failure message="Zombie not handled" type="essential">impacted: Pod/coredns-coredns-6d78d748f5-srlgq (cnti-default) container coredns: process sleep (pid 1104, parent 861) is a zombie: state Z (zombie)
+remediation: Make the PID 1 container process to handle/reap zombie processes; enable process namespace sharing in Kubernetes or use specialized Init system.</failure>
+    </testcase>
+    <testcase classname="microservice" name="sig_term_handled" time="36.833"/>
+    <testcase classname="microservice" name="specialized_init_system" time="0.551">
+      <failure message="Containers do not use specialized init systems (&#x9AD;_&#x9AD;) &#x783;" type="essential">impacted: Pod/coredns-coredns-6d78d748f5-srlgq (cnti-default) container coredns: '/coredns' as init process
+remediation: Use init systems that are purpose-built for containers like tini, dumb-init, catatonit, s6-overlay, gopherd.</failure>
+    </testcase>
+  </testsuite>
+  <testsuite name="resilience" tests="2" failures="0" errors="0" skipped="0" time="0.087">
+    <testcase classname="resilience" name="liveness" time="0.043"/>
+    <testcase classname="resilience" name="readiness" time="0.044"/>
+  </testsuite>
+  <testsuite name="compatibility" tests="1" failures="0" errors="0" skipped="0" time="27.987">
+    <testcase classname="compatibility" name="increase_decrease_capacity" time="27.987"/>
+  </testsuite>
+</testsuites>
