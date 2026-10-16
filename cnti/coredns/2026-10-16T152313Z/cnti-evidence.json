@@ -1,0 +1,88 @@
+{
+  "_type": "https://in-toto.io/Statement/v1",
+  "subject": [
+    {
+      "name": "cnti-testsuite-results-20261016-152313-203.yml",
+      "digest": {
+        "sha256": "343b2d5e10dad03314880f2eef57afc03f13e26973b19b713da2abc4b053cacf"
+      }
+    }
+  ],
+  "predicateType": "https://in-toto.io/attestation/test-result/v0.1",
+  "predicate": {
+    "result": "PASSED",
+    "configuration": [
+      {
+        "name": "config/cnti-testsuite.yaml",
+        "digest": {
+          "sha256": "5fdfbaf419c586f77da6dd6a0905c6e349a24ba373f22e4ba63cf200369b386b"
+        }
+      }
+    ],
+    "passedTests": [
+      "node_drain",
+      "selinux_options",
+      "container_sock_mounts",
+      "privileged_containers",
+      "cpu_limits",
+      "memory_limits",
+      "hostpath_mounts",
+      "latest_tag",
+      "hostport_not_used",
+      "hardcoded_ip_addresses_in_k8s_runtime_configuration",
+      "log_output",
+      "single_process_type",
+      "sig_term_handled",
+      "liveness",
+      "readiness",
+      "increase_decrease_capacity"
+    ],
+    "failedTests": [
+      "non_root_containers",
+      "zombie_handled",
+      "specialized_init_system"
+    ],
+    "warnedTests": [],
+    "cnti": {
+      "schema_version": 1,
+      "testsuite_version": "v2.3.0",
+      "task": "cert",
+      "label": "CNTi essential",
+      "status": "passed",
+      "exit_code": 0,
+      "passed": 16,
+      "max_passed": 19,
+      "essential_passed": 16,
+      "essential_max_passed": 19,
+      "points": 1600,
+      "maximum_points": 1900,
+      "criteria": [
+        {
+          "group": "cert",
+          "scope": "essential",
+          "min_passed": 15,
+          "min_ratio": null,
+          "declared_count": 19,
+          "max_failed": null,
+          "passed_count": 16,
+          "max_passed": 19,
+          "failed_count": 3,
+          "passed": true
+        }
+      ],
+      "run_date": "2026-10-16T15:23:13Z",
+      "results_file": "cnti-testsuite-results-20261016-152313-203.yml",
+      "self_published": true,
+      "provenance": {
+        "method": "none",
+        "files": [],
+        "identity": null
+      },
+      "published_files": [
+        "testsuite/example-cnfs/coredns/cnti-testsuite.yaml"
+      ],
+      "withheld_files": [],
+      "run_url": "https://github.com/lfn-cnti/testsuite-action/actions/runs/38923288944"
+    }
+  }
+}
