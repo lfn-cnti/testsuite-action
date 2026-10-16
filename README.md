@@ -60,6 +60,7 @@ Existing cluster (self-hosted runner with `$KUBECONFIG` set):
 |---|---|---|
 | `version` | `latest` | cnti-testsuite release tag, e.g. `v2.0.0` (v2.0.0 or newer) |
 | `binary_url` | | URL of a release tarball to install instead of `version`, e.g. a prerelease on a fork, to try a build before its release |
+| `attest` | `false` | attest the results file with GitHub artifact attestations, from the default branch (needs `id-token: write`, `attestations: write`) |
 | `cnf_config` | | Path to a `cnti-testsuite.yaml`; takes precedence over `helm_chart_dir` |
 | `helm_chart_dir` | | Local Helm chart directory; a minimal config is generated |
 | `tests` | `cert` | Task to run: `cert` (the essential tests), `workload`, `all`, `static`, a category or a single test |
@@ -194,8 +195,27 @@ public page:
 ![CNTi essential](https://github.com/<owner>/cnti-evidence/raw/main/cnti/<cnf name>/latest/cnti-badge.svg)
 ```
 
-Signing the statement, so a reader can verify it came from your pipeline, is a separate step
-(lfn-cnti/testsuite#2738).
+#### Prove where the evidence came from
+
+With `attest: "true"` the action attests the results file with
+[GitHub artifact attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations):
+the statement's Test Result predicate, signed with the workflow's identity and stored by GitHub.
+A reader of the published bundle verifies it without access to your repository:
+
+```
+gh attestation verify cnti-testsuite-results-<timestamp>.yml \\
+  --repo <owner>/<repo> --predicate-type https://in-toto.io/attestation/test-result/v0.1
+```
+
+(`--owner <org>` in place of `--repo` accepts any repository of an organisation. The predicate
+type is needed: without it `gh` looks for a SLSA build provenance, which this is not. Add
+`--format json` to see the signed statement and the workflow that produced it.)
+
+The job needs `permissions: id-token: write` and `attestations: write`; the attestation is
+made from runs of the default branch only, and the statement in the bundle then says
+`provenance.method: github-attestation`. If the attestation fails, the bundle is published
+unsigned (`provenance.method: none`) and the job goes on. The suite's USAGE describes the
+other signing methods (Sigstore keyless, a project key) for CI systems that are not GitHub.
 
 ## Requirements
 
