@@ -339,15 +339,25 @@ runs:
     # `evidence` subcommand (cnti-testsuite v2.3.0 or newer): the badge (SVG,
     # shields.io JSON), the in-toto Test Result statement, the results file and
     # its JUnit report.
+    # The badge and the evidence come from the suite (v2.3.0 or newer). A run that
+    # asked for either and got a suite without the subcommand fails here: a badge
+    # that quietly stops updating would look like a verdict.
     - name: Write evidence
       id: evidence
       if: always() && steps.results.outputs.results_file != ''
       shell: bash
+      env:
+        SUITE_TAG: ${{ steps.version.outputs.tag }}
+        WANTED: ${{ inputs.badge_branch != '' || inputs.gist_badge_id != '' || inputs.evidence_repository != '' || inputs.attest == 'true' || inputs.evidence_oci_ref != '' }}
       run: |
         set -uo pipefail
         dir=cnti/evidence
         if ! cnti-testsuite evidence --output-dir "$dir"; then
-          echo "::warning::cnti-testsuite evidence failed: no badge or evidence for this run (the subcommand needs cnti-testsuite v2.3.0 or newer)"
+          if [[ "$WANTED" == "true" ]]; then
+            echo "::error::cnti-testsuite ${SUITE_TAG} cannot write the badge or the evidence this run asked for (badge_branch, gist_badge_id, evidence_repository, attest, evidence_oci_ref): 'cnti-testsuite evidence' needs v2.3.0 or newer; set 'version: v2.3.0' or 'version: latest'"
+            exit 1
+          fi
+          echo "::warning::cnti-testsuite ${SUITE_TAG} has no 'cnti-testsuite evidence' (v2.3.0 or newer): no badge or evidence for this run"
           exit 0
         fi
         echo "dir=$dir" >> "$GITHUB_OUTPUT"

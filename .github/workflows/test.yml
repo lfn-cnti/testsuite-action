@@ -53,6 +53,33 @@ jobs:
           test "${{ steps.cnti.outputs.exit_code }}" = "${{ matrix.expect_exit }}"
           test -n "${{ steps.cnti.outputs.maximum_points }}"
 
+  # A suite without `cnti-testsuite evidence` (before v2.3.0) and a run that asks
+  # for the badge: the action must fail, not skip the badge quietly.
+  old-suite-badge:
+    name: old suite with badge_branch (fails)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Fetch example CNF
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: lfn-cnti/testsuite
+          path: testsuite
+          sparse-checkout: example-cnfs/coredns
+      - name: Run action
+        id: cnti
+        continue-on-error: true
+        uses: ./
+        with:
+          version: v2.2.0
+          cnf_config: testsuite/example-cnfs/coredns/cnti-testsuite.yaml
+          badge_branch: badges-selftest-old-suite
+          fail_on_failure: false
+      - name: The run must have failed on the missing evidence subcommand
+        run: |
+          echo "outcome=${{ steps.cnti.outcome }}"
+          test "${{ steps.cnti.outcome }}" = "failure"
+
   # The evidence bundle pushed to a repository: this one, on the evidence-selftest
   # branch, with the job's own token; the same clone, commit and push path as an
   # external evidence repository. Not on pull requests, whose token cannot write.

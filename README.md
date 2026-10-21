@@ -58,7 +58,7 @@ Existing cluster (self-hosted runner with `$KUBECONFIG` set):
 
 | Input | Default | Description |
 |---|---|---|
-| `version` | `latest` | cnti-testsuite release tag, e.g. `v2.0.0` (v2.0.0 or newer) |
+| `version` | `latest` | cnti-testsuite release tag, e.g. `v2.0.0` (v2.0.0 or newer; the badge and the evidence need v2.3.0 or newer, and a run that asks for them with an older suite fails) |
 | `binary_url` | | URL of a release tarball to install instead of `version`, e.g. a prerelease on a fork, to try a build before its release |
 | `attest` | `false` | attest the results file with GitHub artifact attestations, from the default branch (needs `id-token: write`, `attestations: write`) |
 | `cnf_config` | | Path to a `cnti-testsuite.yaml`; takes precedence over `helm_chart_dir` |
