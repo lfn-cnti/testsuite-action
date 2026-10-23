@@ -70,6 +70,10 @@ inputs:
     description: "Publish the badge (cnti-badge.svg and cnti-badge.json in shields.io endpoint format, written by cnti-testsuite evidence, v2.3.0 or newer) to this orphan branch of the repository with the job's GITHUB_TOKEN - no secret needed, but the job needs 'permissions: contents: write'. Only runs on the default branch. Empty: off."
     required: false
     default: ""
+  badge_name:
+    description: "Optional, with badge_branch: publish the badge to <badge_name>/ on that branch instead of its root, keeping the rest of the branch, so several CNFs of one repository can share one badge branch (one badge_name each). Letters, digits, '.', '_' and '-'. Empty: the badge is the branch's only content, as before."
+    required: false
+    default: ""
   gist_badge_id:
     description: "Optional: gist ID to publish a shields.io badge (with the CNTi logo) to, from runs of the default branch (requires gist_badge_secret). For repositories whose workflows may not write to the repository; otherwise badge_branch needs no secret."
     required: false
@@ -520,6 +524,7 @@ runs:
       shell: bash
       env:
         BADGE_BRANCH: ${{ inputs.badge_branch }}
+        BADGE_NAME: ${{ inputs.badge_name }}
         BADGE_SOURCE_DIR: ${{ steps.evidence.outputs.dir }}
         RUN_EXIT_CODE: ${{ steps.run.outputs.exit_code }}
         GH_TOKEN: ${{ github.token }}
