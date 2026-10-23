@@ -77,6 +77,7 @@ Existing cluster (self-hosted runner with `$KUBECONFIG` set):
 | `upload_results` | `true` | Upload `cnti/results/` and `cnti/evidence/` as an artifact: every run's full evidence is downloadable from the run page, whether or not a badge or an evidence repository is set |
 | `artifact_name` | `cnti-testsuite-results` | Artifact name |
 | `badge_branch` | | Publish `cnti-badge.svg`/`.json` to this orphan branch with `GITHUB_TOKEN` (needs `permissions: contents: write`); default branch only |
+| `badge_name` | | With `badge_branch`: publish to `<badge_name>/` on the branch and keep the rest of it, so several CNFs of one repository share one badge branch (see [Several CNFs in one repository](#several-cnfs-in-one-repository)) |
 | `gist_badge_id` | | Optional gist ID for a results badge on another repository |
 | `gist_badge_secret` | | Token with `gist` scope |
 | `gist_badge_filename` | `cnti_badge.json` | Badge file name in the gist |
@@ -125,6 +126,33 @@ permissions:
 
 The badge shows the CNTi logo, the test set and the result, e.g. `CNTi essential 16/19` (tests passed / maximum for the task that ran; the `cert` task's set is named `essential`, any other task by its name), green when the run met its objective. It is written by the suite itself (`cnti-testsuite evidence`, v2.3.0 or newer), so every CI system gets the same badge. Pull requests never
 touch the badge; only runs on the default branch publish it.
+
+### Several CNFs in one repository
+
+Without `badge_name` the branch holds one badge, and every run replaces the branch. When one
+repository tests several CNFs (a chart per network function, say), give each its own
+`badge_name`: the badge goes to `<badge_name>/` on the shared branch, the other CNFs' badges
+stay, and the branch is still a single commit. Jobs that publish at the same time retry, up to
+five attempts each; a job that loses every attempt warns and leaves its previous badge in place.
+
+```yaml
+strategy:
+  matrix:
+    cnf: [gnb, du]
+steps:
+  - uses: lfn-cnti/testsuite-action@v1
+    with:
+      cnf_config: cnti/${{ matrix.cnf }}/cnti-testsuite.yaml
+      badge_branch: badges
+      badge_name: ${{ matrix.cnf }}
+```
+
+```markdown
+![CNTi essential](https://github.com/<owner>/<repo>/raw/badges/gnb/cnti-badge.svg)
+```
+
+Use `badge_name` for every CNF that publishes to the branch: a run without it replaces the
+whole branch.
 
 ### Without write access to the repository
 

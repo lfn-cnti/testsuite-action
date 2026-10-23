@@ -4,6 +4,8 @@
 # repository using the job's GITHUB_TOKEN. Only runs on the default branch so a
 # pull request never overwrites the badge. Never fails the job.
 # BADGE_DRY_RUN=1 copies the two files to the current directory instead of pushing.
+# BADGE_NAME puts the badge in <BADGE_NAME>/ on the branch and keeps the rest of
+# it, so several CNFs of one repository can share the branch.
 set -uo pipefail
 
 # Only a completed run has a verdict worth publishing: 0 (objective met) or 1
@@ -19,6 +21,10 @@ if [[ ! -f "${BADGE_SOURCE_DIR:-}/cnti-badge.svg" || ! -f "${BADGE_SOURCE_DIR:-}
   exit 0
 fi
 label=$(jq -r '.label + " " + .message' "$BADGE_SOURCE_DIR/cnti-badge.json")
+if [[ -n "${BADGE_NAME:-}" && ( ! "$BADGE_NAME" =~ ^[A-Za-z0-9._-]+$ || "$BADGE_NAME" == "." || "$BADGE_NAME" == ".." || "$BADGE_NAME" == ".git" ) ]]; then
+  echo "::warning::Badge not published: badge_name '${BADGE_NAME}' may hold only letters, digits, '.', '_' and '-'"
+  exit 0
+fi
 
 if [[ "${BADGE_DRY_RUN:-}" == "1" ]]; then
   cp "$BADGE_SOURCE_DIR/cnti-badge.svg" "$BADGE_SOURCE_DIR/cnti-badge.json" .
@@ -34,18 +40,60 @@ fi
 
 work=$(mktemp -d)
 cp "$BADGE_SOURCE_DIR/cnti-badge.svg" "$BADGE_SOURCE_DIR/cnti-badge.json" "$work"/
-cd "$work"
-git init -q -b "$BADGE_BRANCH"
-git config user.name "github-actions[bot]"
-git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-git add cnti-badge.svg cnti-badge.json
-git commit -q -m "CNTi badge: ${label}"
 remote="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}.git"
 remote="${remote/https:\/\//https://x-access-token:${GH_TOKEN}@}"
-# The branch holds nothing but the current badge: one commit, replaced on every publish.
-if git push -q --force "$remote" "HEAD:refs/heads/${BADGE_BRANCH}"; then
-  echo "Badge published to branch ${BADGE_BRANCH}: ${label}"
-  echo "Embed: ![${label}](${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}/raw/${BADGE_BRANCH}/cnti-badge.svg)"
+raw="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}/raw/${BADGE_BRANCH}"
+
+if [[ -z "${BADGE_NAME:-}" ]]; then
+  cd "$work"
+  git init -q -b "$BADGE_BRANCH"
+  git config user.name "github-actions[bot]"
+  git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+  git add cnti-badge.svg cnti-badge.json
+  git commit -q -m "CNTi badge: ${label}"
+  # The branch holds nothing but the current badge: one commit, replaced on every publish.
+  if git push -q --force "$remote" "HEAD:refs/heads/${BADGE_BRANCH}"; then
+    echo "Badge published to branch ${BADGE_BRANCH}: ${label}"
+    echo "Embed: ![${label}](${raw}/cnti-badge.svg)"
+  else
+    echo "::warning::Could not push the badge branch '${BADGE_BRANCH}' - does the job have 'permissions: contents: write'?"
+  fi
+  exit 0
+fi
+
+# A named badge: the branch's current content, with <BADGE_NAME>/ replaced,
+# as one new commit, so the branch stays a single commit however many CNFs
+# publish to it. Jobs of the same push may publish at the same time: the push
+# only replaces the tip it started from, and a rejected push starts over from
+# the new tip.
+published=""
+for attempt in 1 2 3 4 5; do
+  tree="$work/branch-$attempt"
+  git init -q -b "$BADGE_BRANCH" "$tree"
+  cd "$tree" || break
+  git config user.name "github-actions[bot]"
+  git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+  tip=""
+  if git fetch -q --depth 1 "$remote" "refs/heads/${BADGE_BRANCH}" 2>/dev/null; then
+    tip=$(git rev-parse FETCH_HEAD)
+    git read-tree "$tip" && git checkout-index -a -f
+  fi
+  rm -rf "./${BADGE_NAME}"
+  mkdir -p "./${BADGE_NAME}"
+  cp "$work/cnti-badge.svg" "$work/cnti-badge.json" "./${BADGE_NAME}/"
+  git add -A
+  git commit -q -m "CNTi badge ${BADGE_NAME}: ${label}"
+  # An empty expectation means the branch must not exist yet.
+  if git push -q --force-with-lease="refs/heads/${BADGE_BRANCH}:${tip}" "$remote" "HEAD:refs/heads/${BADGE_BRANCH}" 2>/dev/null; then
+    published=1
+    break
+  fi
+  echo "Badge branch ${BADGE_BRANCH} moved while publishing (attempt ${attempt}); retrying from its new tip"
+  sleep $(( attempt * 2 + RANDOM % 3 ))
+done
+if [[ -n "$published" ]]; then
+  echo "Badge published to branch ${BADGE_BRANCH} as ${BADGE_NAME}: ${label}"
+  echo "Embed: ![${label}](${raw}/${BADGE_NAME}/cnti-badge.svg)"
 else
-  echo "::warning::Could not push the badge branch '${BADGE_BRANCH}' - does the job have 'permissions: contents: write'?"
+  echo "::warning::Could not push the badge to '${BADGE_BRANCH}/${BADGE_NAME}' - does the job have 'permissions: contents: write'?"
 fi
