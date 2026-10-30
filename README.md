@@ -71,6 +71,7 @@ Existing cluster (self-hosted runner with `$KUBECONFIG` set):
 | `install_timeout` | | Seconds to wait for the CNF during `cnf_install` (`--timeout`) |
 | `create_kind_cluster` | `true` | Create a kind cluster; `false` uses `$KUBECONFIG` |
 | `kind_config` | | Custom kind config (default: 1 control-plane + 2 workers) |
+| `kind_shared_storage` | `true` | Give the kind cluster volumes that follow a pod to another node (see [Storage](#storage)); `false` keeps kind's node-local volumes |
 | `kind_version` | | kind version; empty uses the [helm/kind-action](https://github.com/helm/kind-action) default |
 | `kind_load_images` | | Local Docker images to load into the kind cluster (whitespace-separated) |
 | `fail_on_failure` | `true` | Fail the job when the run exits non-zero |
@@ -265,6 +266,55 @@ access can pull the attestation. The statement records the reference in
 GitHub attestations were made too, which it then keeps. The reference is recorded before anything signs
 the statement, so the bundle's statement is the one both signatures cover; if attaching fails,
 the reference is taken out again.
+
+## Storage
+
+kind's default StorageClass (`standard`, from local-path-provisioner) keeps each volume on the
+node that created it, and the volume's node affinity pins its pod there. When `node_drain`
+drains that node, a StatefulSet's pod can never start elsewhere, whatever the CNF does; on a
+cluster with network storage the same CNF passes.
+
+So the action mounts one directory on every kind node and switches the provisioner to its
+shared mode: volumes have no node affinity, and a drained pod starts on another node with its
+data. The StorageClass keeps its name and stays the default, so CNF configurations don't
+change. `kind_shared_storage: false` turns this off.
+
+- **Where the data lives:** a Docker volume labelled `org.lfn-cnti.testsuite-action=kind-storage`,
+  on the Docker host and readable by root only. On a reused self-hosted runner, the next run of
+  the action removes the volumes of earlier runs, provided their kind cluster is gone (the
+  cluster the action creates is deleted when the job ends; one left behind keeps its volumes).
+- **A `kind_config` of your own** gets the same mount on every node. If it already mounts
+  `/var/local-path-provisioner` on any node, the action leaves its storage alone, the
+  provisioner included: mount one shared directory there on every node and configure the
+  provisioner as shown below.
+- **Older kind node images** whose provisioner has no shared mode keep node-local volumes; the
+  action says so with a warning.
+
+The shared volumes behave like file storage that every node reaches at once (NFS, CephFS), not
+like block storage that attaches to one node at a time: a `ReadWriteOnce` volume can be used on
+two nodes together. A Deployment's rolling update with such a volume starts here where block
+storage would stop it with a multi-attach error; `node_drain` judges whether pods move, not how
+the storage attaches.
+
+With `create_kind_cluster: false` and a kind cluster of your own, the same takes a mount on
+every node and three commands after `kind create cluster`:
+
+```yaml
+nodes:
+  - role: control-plane
+    extraMounts: &shared-storage
+      - hostPath: /tmp/kind-shared-storage   # one runner directory for all nodes
+        containerPath: /var/local-path-provisioner
+  - role: worker
+    extraMounts: *shared-storage
+```
+
+```bash
+kubectl -n local-path-storage patch configmap local-path-config --type merge -p \
+  '{"data":{"config.json":"{\"nodePathMap\":[],\"sharedFileSystemPath\":\"/var/local-path-provisioner\"}"}}'
+kubectl -n local-path-storage rollout restart deployment local-path-provisioner
+kubectl -n local-path-storage rollout status deployment local-path-provisioner
+```
 
 ## Requirements
 
