@@ -23,7 +23,7 @@ trap 'rm -rf "$work"' EXIT
 args=(compare --results-file "$RESULTS_FILE" --expected "$EXPECTED_RESULTS")
 if ! cnti-testsuite "${args[@]}" --output json > "$work/report.json" 2> "$work/err"; then
   if ! cnti-testsuite help 2>/dev/null | grep -qw compare; then
-    skip "this cnti-testsuite has no 'compare' (it needs a release with lfn-cnti/testsuite#2872)"
+    skip "this cnti-testsuite has no 'compare' (it needs v2.4.0 or later)"
   fi
   skip "cnti-testsuite compare refused: $(grep -v '^\[' "$work/err" | tail -3 | tr '\n' ' ' | head -c 400)"
 fi

@@ -31,26 +31,12 @@ jobs:
           # expected_results through the whole action: CoreDNS passes, so a test
           # listed as failing is an improvement, and on_regression: fail has no
           # regression to fail on.
-          - version: latest
+          - version: v2.4.0
             extra_args: ""
             expect_exit: "0"
             expected_results: .github/fixtures/expected/coredns.yaml
-    needs: suite-with-compare
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # expected_results needs a suite with compare: the branch build, through
-      # binary_url, under a tag of this run so no other run's cache is used.
-      - if: matrix.expected_results
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: cnti-testsuite-compare
-          path: ${{ runner.temp }}/suite
-      - if: matrix.expected_results
-        id: suite
-        run: |
-          tarball="$RUNNER_TEMP/suite/cnti-testsuite-compare-${{ github.run_id }}-${{ github.run_attempt }}.tar.gz"
-          mv "$RUNNER_TEMP/suite/cnti-testsuite-compare.tar.gz" "$tarball"
-          echo "binary_url=file://$tarball" >> "$GITHUB_OUTPUT"
       - name: Fetch example CNF
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -62,7 +48,6 @@ jobs:
         uses: ./
         with:
           version: ${{ matrix.version }}
-          binary_url: ${{ steps.suite.outputs.binary_url }}
           cnf_config: testsuite/example-cnfs/coredns/cnti-testsuite.yaml
           extra_args: ${{ matrix.extra_args }}
           log_level: info
@@ -81,51 +66,24 @@ jobs:
             test -z "${{ steps.cnti.outputs.regressions }}"
           fi
 
-  # The suite compares (lfn-cnti/testsuite#2872); until a release has
-  # `compare`, the expected-results jobs use a build of main, packed
-  # like a release so the action can install it through binary_url.
-  suite-with-compare:
-    name: suite with compare (until a release has it)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: lfn-cnti/testsuite
-          ref: main
-          path: testsuite-src
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Build
-        run: |
-          set -euo pipefail
-          docker run --rm -v "$PWD/testsuite-src:/workspace" -w /workspace crystallang/crystal:1.19.1-alpine-build sh -c "\
-            git config --global --add safe.directory /workspace && shards install && \
-            crystal build src/cnti-testsuite.cr --static --link-flags '-lxml2 -llzma'"
-          tar -czf cnti-testsuite-compare.tar.gz -C testsuite-src cnti-testsuite
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: cnti-testsuite-compare
-          path: cnti-testsuite-compare.tar.gz
-          retention-days: 1
-
   # The wrapper around the suite's comparison, on a results file and an
   # expectations file of every kind of difference, on the files the suite
   # refuses, and with a suite that has no `compare`. What counts as a
   # difference is the suite's, and its specs test it.
   expected-results:
     name: expected results
-    needs: suite-with-compare
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: cnti-testsuite-compare
-          path: ${{ runner.temp }}/suite
+      # The first release with `compare` and `analyze`.
+      - name: The suite (v2.4.0)
+        run: |
+          mkdir -p "$RUNNER_TEMP/suite"
+          curl -sSfL --retry 3 https://github.com/lfn-cnti/testsuite/releases/download/v2.4.0/cnti-testsuite-v2.4.0.tar.gz \
+            | tar -xz -C "$RUNNER_TEMP/suite"
       - name: Check the comparison
         run: |
           set -euo pipefail
-          tar -C "$RUNNER_TEMP/suite" -xzf "$RUNNER_TEMP/suite/cnti-testsuite-compare.tar.gz"
           export PATH="$RUNNER_TEMP/suite:$PATH"
           f=.github/fixtures/expected
           t=$(mktemp -d)
@@ -175,7 +133,7 @@ jobs:
           printf '#!/bin/sh\n[ "$1" = help ] && { echo "Tasks: cert workload evidence"; exit 0; }\nexit 1\n' > "$t/old/cnti-testsuite"
           chmod +x "$t/old/cnti-testsuite"
           PATH="$t/old:$PATH" compare $f/expected.yaml old
-          grep -q "::warning::this cnti-testsuite has no 'compare' (it needs a release with lfn-cnti/testsuite#2872): the results are not compared" "$t/old.log"
+          grep -q "::warning::this cnti-testsuite has no 'compare' (it needs v2.4.0 or later): the results are not compared" "$t/old.log"
           grep -qx 'regressions=' "$t/old.out"
           test ! -s "$t/old.md"
 
@@ -253,6 +211,170 @@ jobs:
           if [[ "$CUSTOM_CONFIG" == "true" ]]; then
             test "$(kubectl get nodes -l example=adopter -o name | wc -l)" = "1"
           fi
+
+  # The wrapper against a stand-in for the model's API, with the suite doing
+  # its part for real: what reaches the endpoint, the key's only way there,
+  # the retry without response_format, a run with nothing to send, and every
+  # way it can go wrong ending as a warning. No real model or key.
+  analyze:
+    name: analyze (mock model)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The first release with `compare` and `analyze`.
+      - name: The suite (v2.4.0)
+        run: |
+          mkdir -p "$RUNNER_TEMP/suite"
+          curl -sSfL --retry 3 https://github.com/lfn-cnti/testsuite/releases/download/v2.4.0/cnti-testsuite-v2.4.0.tar.gz \
+            | tar -xz -C "$RUNNER_TEMP/suite"
+      - name: Check the analysis
+        env:
+          KEY: sk-test-not-a-real-key-0123456789
+        run: |
+          set -euo pipefail
+          chmod +x "$RUNNER_TEMP/suite/cnti-testsuite"; export PATH="$RUNNER_TEMP/suite:$PATH"
+          f=.github/fixtures/analyze
+          results=$f/run/cnti-testsuite-results-20261031-120000-000.yml
+          state=$(mktemp -d)
+          python3 "$f/mock_model.py" "$state" &
+          for _ in $(seq 20); do curl -s -o /dev/null http://127.0.0.1:8765/ && break || sleep 0.5; done
+          reply() { jq -n --argjson s "$1" --argjson b "$2" '{status: $s, body: $b}' > "$state/reply.json"; }
+          requests() { ls "$state"/request-*.json 2>/dev/null | wc -l; }
+          last() { ls -1 "$state"/request-*.json | sort -V | tail -1; }
+          # The ::add-mask:: command is the one line the runner reads and never
+          # shows; anything else with the key is a leak.
+          no_key() { if grep -v '^::add-mask::' "$1" | grep -q "$KEY"; then echo "::error::the key is in $1"; exit 1; fi; }
+          run() { # label, then env assignments
+            local label=$1; shift
+            rm -rf cnti; : > "$state/$label.out"; : > "$state/$label.md"
+            env GITHUB_OUTPUT="$state/$label.out" GITHUB_STEP_SUMMARY="$state/$label.md" RESULTS_FILE=$results \
+              ANALYZE_ENDPOINT=http://127.0.0.1:8765 ANALYZE_MODEL=mock-model "$@" bash scripts/analyze.sh > "$state/$label.log" 2>&1
+            cat "$state/$label.log"
+            no_key "$state/$label.log"; no_key "$state/$label.md"
+          }
+          answer=$(cat "$f/answer.json")
+
+          echo "::group::anthropic: the request the suite prepared, and the key in its header only"
+          reply 200 "$(jq -n --arg t "$answer" '{model: "mock-claude", stop_reason: "end_turn", content: [{type: "text", text: $t}]}')"
+          run anthropic ANALYZE_PROVIDER=anthropic ANALYZE_API_KEY=$KEY
+          req=$(last)
+          jq -e '.path == "/v1/messages"' "$req"
+          jq -e '.headers["x-api-key"] == "'"$KEY"'" and (.headers["anthropic-version"] | length > 0)' "$req"
+          jq -e '.body | fromjson | .output_config.format.type == "json_schema" and (.messages[0].content | contains("\"id\":\"T1-C1\""))' "$req"
+          grep -q '^### AI analysis (advisory, generated by `mock-claude`' "$state/anthropic.md"
+          grep -qF "scheduling_failed Pod/db-0 in cnf: 0/3 nodes are available: 2 node(s) didn't match PersistentVolume's node affinity (T1-C1)" "$state/anthropic.md"
+          grep -q "1 cited fact(s) not in the facts left out" "$state/anthropic.md"
+          grep -qx 'file=cnti/analysis.md' "$state/anthropic.out"
+          echo "::endgroup::"
+
+          echo "::group::openai-compatible: no key, and the request again without response_format after a 400"
+          ok=$(jq -n --arg c "$answer" '{model: "m", choices: [{message: {content: $c}}]}')
+          jq -n --argjson ok "$ok" '{status: 400, body: {error: {message: "Unrecognized request argument supplied: response_format"}}, then: {status: 200, body: $ok}}' > "$state/reply.json"
+          before=$(requests)
+          run retry ANALYZE_PROVIDER=openai-compatible ANALYZE_API_KEY=
+          test "$(requests)" = "$((before + 2))"
+          grep -q "sending request.retry.json" "$state/retry.log"
+          jq -e '(.headers | has("Authorization") | not) and (.body | fromjson | has("response_format") | not) and .path == "/chat/completions"' "$(last)"
+          grep -q '^\*\*zombie_handled\*\*, failed' "$state/retry.md"
+          echo "::endgroup::"
+
+          echo "::group::every failure expected: nothing sent, the reasons in the summary"
+          printf -- '- {test: node_drain, status: failed, reason: node-local storage on kind}\n- {test: zombie_handled, status: failed, reason: no init in the image}\n' > "$state/expected.yaml"
+          before=$(requests)
+          run expected ANALYZE_PROVIDER=anthropic ANALYZE_API_KEY=$KEY EXPECTED_RESULTS="$state/expected.yaml"
+          test "$(requests)" = "$before"
+          grep -q '^- \*\*node_drain\*\*, failed: node-local storage on kind$' "$state/expected.md"
+          if grep -q '^### AI analysis' "$state/expected.md"; then echo "::error::an expected failure was analyzed"; exit 1; fi
+          echo "::endgroup::"
+
+          echo "::group::failures are warnings"
+          reply 400 '{"type": "error", "error": {"type": "invalid_request_error", "message": "model: nope"}}'
+          run error ANALYZE_PROVIDER=anthropic ANALYZE_API_KEY=$KEY
+          grep -q '::warning::AI analysis skipped: the endpoint answered HTTP 400: model: nope' "$state/error.log"
+          test ! -s "$state/error.out"
+          run nokey ANALYZE_PROVIDER=anthropic ANALYZE_API_KEY=
+          grep -q '::warning::AI analysis skipped: analyze_api_key is not set' "$state/nokey.log"
+          run refused ANALYZE_PROVIDER=github-models ANALYZE_API_KEY=$KEY
+          grep -q '::warning::AI analysis skipped: cnti-testsuite analyze prepare refused: .*no provider' "$state/refused.log"
+          mkdir -p "$state/old"; printf '#!/bin/sh\necho "Unknown task"; exit 64\n' > "$state/old/cnti-testsuite"; chmod +x "$state/old/cnti-testsuite"
+          PATH="$state/old:$PATH" run old ANALYZE_PROVIDER=anthropic ANALYZE_API_KEY=$KEY
+          grep -q "::warning::AI analysis skipped: this cnti-testsuite has no 'analyze'" "$state/old.log"
+          echo "::endgroup::"
+
+          echo "::group::the key stays out of the suite, goes over TLS only, and a failed render is a warning"
+          # A wrapper that records the environment the suite gets, and fails
+          # render when asked to.
+          real=$(command -v cnti-testsuite)
+          mkdir -p "$state/wrap"
+          printf '#!/bin/sh\nenv > "%s/suite-env.$$"\nif [ -n "$FAIL_RENDER" ] && [ "$1 $2" = "analyze render" ]; then echo "render broke" >&2; exit 1; fi\nexec %s "$@"\n' "$state" "$real" > "$state/wrap/cnti-testsuite"
+          chmod +x "$state/wrap/cnti-testsuite"
+          reply 200 "$(jq -n --arg t "$answer" '{model: "mock-claude", stop_reason: "end_turn", content: [{type: "text", text: $t}]}')"
+          PATH="$state/wrap:$PATH" run wrapped ANALYZE_PROVIDER=anthropic ANALYZE_API_KEY=$KEY
+          ls "$state"/suite-env.* > /dev/null
+          # KEY is this step's own variable, so every process has it: the key
+          # must not be anywhere else in the suite's environment.
+          for e in "$state"/suite-env.*; do
+            if grep -v '^KEY=' "$e" | grep -q "$KEY"; then echo "::error::the suite was started with the key ($e)"; exit 1; fi
+          done
+          jq -e '.headers["x-api-key"] == "'"$KEY"'"' "$(last)"
+          before=$(requests)
+          run plainhttp ANALYZE_PROVIDER=anthropic ANALYZE_API_KEY=$KEY ANALYZE_ENDPOINT=http://cnti.invalid
+          test "$(requests)" = "$before"
+          grep -q '::warning::AI analysis skipped: analyze_endpoint must use https:// when analyze_api_key is set' "$state/plainhttp.log"
+          # A loopback host followed by credentials goes elsewhere: refused too.
+          run userinfo ANALYZE_PROVIDER=anthropic ANALYZE_API_KEY=$KEY ANALYZE_ENDPOINT=http://127.0.0.1:8765@cnti.invalid
+          test "$(requests)" = "$before"
+          grep -q '::warning::AI analysis skipped: analyze_endpoint must use https:// when analyze_api_key is set' "$state/userinfo.log"
+          reply 200 "$(jq -n --arg t "$answer" '{model: "mock-claude", stop_reason: "end_turn", content: [{type: "text", text: $t}]}')"
+          PATH="$state/wrap:$PATH" run render FAIL_RENDER=1 ANALYZE_PROVIDER=anthropic ANALYZE_API_KEY=$KEY
+          grep -q '::warning::AI analysis: cnti-testsuite analyze render failed: .*render broke' "$state/render.log"
+          echo "::endgroup::"
+
+  # The analysis against a real model, free: a small one in Ollama on the
+  # runner, through openai-compatible, as an adopter whose data must stay in
+  # their network would run it. A model this small does not always keep to
+  # the schema, so a well-formed analysis and the warning for an answer that is
+  # not the expected JSON both pass; an unreachable server or an error does not.
+  analyze-local-model:
+    name: analyze (local model)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MODEL: qwen2.5:1.5b
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The first release with `compare` and `analyze`.
+      - name: The suite (v2.4.0)
+        run: |
+          mkdir -p "$RUNNER_TEMP/suite"
+          curl -sSfL --retry 3 https://github.com/lfn-cnti/testsuite/releases/download/v2.4.0/cnti-testsuite-v2.4.0.tar.gz \
+            | tar -xz -C "$RUNNER_TEMP/suite"
+      - name: Start Ollama with a small model
+        run: |
+          set -euo pipefail
+          docker run -d --name ollama -p 127.0.0.1:11434:11434 ollama/ollama:0.40.12@sha256:20d1bbfbabe1c97ba4b16301f08a20d8484bcf77047742a3cb71c613d8e12d0b
+          for _ in $(seq 60); do curl -sf http://127.0.0.1:11434/api/version && break || sleep 2; done
+          docker exec ollama ollama pull "$MODEL"
+      - name: Analyze the fixture's failures
+        run: |
+          set -euo pipefail
+          chmod +x "$RUNNER_TEMP/suite/cnti-testsuite"; export PATH="$RUNNER_TEMP/suite:$PATH"
+          start=$(date +%s)
+          GITHUB_OUTPUT="$RUNNER_TEMP/out" RESULTS_FILE=.github/fixtures/analyze/run/cnti-testsuite-results-20261031-120000-000.yml \
+            ANALYZE_PROVIDER=openai-compatible ANALYZE_ENDPOINT=http://127.0.0.1:11434/v1 ANALYZE_MODEL="$MODEL" ANALYZE_API_KEY= \
+            bash scripts/analyze.sh | tee "$RUNNER_TEMP/analyze.log"
+          echo "Answered in $(( $(date +%s) - start )) s"
+          if [[ -s cnti/analysis.md ]] && grep -q '^### AI analysis (advisory, generated by' cnti/analysis.md; then
+            echo "A well-formed analysis"
+          elif grep -q "not the expected JSON" "$RUNNER_TEMP/analyze.log"; then
+            echo "The model's answer did not keep to the schema: handled as a warning" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::the local model's server did not answer as expected"
+            exit 1
+          fi
+      - name: Ollama's log
+        if: failure()
+        run: docker logs ollama 2>&1 | tail -50
 
   # A suite without `cnti-testsuite evidence` (before v2.3.0) and a run that asks
   # for the badge: the action must fail, not skip the badge quietly.
