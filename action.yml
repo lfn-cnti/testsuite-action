@@ -50,6 +50,10 @@ inputs:
     description: "kind version passed to helm/kind-action. Default: the version helm/kind-action ships with."
     required: false
     default: ""
+  kind_shared_storage:
+    description: "Give the kind cluster storage that follows a pod: one runner directory mounted on every node, and kind's local-path provisioner in its shared mode, so PersistentVolumes have no node affinity and a drained node's pods can start on another node with their data. Added to kind_config too, unless it already mounts /var/local-path-provisioner. Only used when create_kind_cluster is true. Set to false for kind's default, node-local volumes."
+    required: false
+    default: "true"
   kind_load_images:
     description: "Whitespace-separated local Docker images to load into the kind cluster (kind load docker-image), e.g. one built earlier in the job. Only used when create_kind_cluster is true."
     required: false
@@ -240,20 +244,90 @@ runs:
           - role: worker
         KIND
 
+    # kind's default storage keeps every volume on the node that created it, so
+    # node_drain can never move a pod with a PersistentVolume, whatever the CNF
+    # does. One runner directory on every node makes the provisioner's volumes
+    # reachable from all of them, as network storage is.
+    - name: Prepare kind config
+      id: kind
+      if: inputs.create_kind_cluster == 'true'
+      shell: bash
+      env:
+        KIND_CONFIG: ${{ inputs.kind_config }}
+        SHARED_STORAGE: ${{ inputs.kind_shared_storage }}
+      run: |
+        set -euo pipefail
+        src="${KIND_CONFIG:-$RUNNER_TEMP/cnti-testsuite-kind.yaml}"
+        config="$RUNNER_TEMP/cnti-testsuite-kind-run.yaml"
+        shared=false
+        if [[ "$SHARED_STORAGE" != "true" ]]; then
+          cp "$src" "$config"
+        elif [[ "$(yq '[(.nodes // [])[] | (.extraMounts // [])[] | select(.containerPath == "/var/local-path-provisioner")] | length' "$src")" != "0" ]]; then
+          echo "::notice::kind_config mounts /var/local-path-provisioner itself: its storage is left as configured"
+          cp "$src" "$config"
+        else
+          # The volumes live in a Docker volume: on the Docker host, readable by
+          # root only, and right for runners that use a host's Docker daemon.
+          # kind cluster names are unique per daemon, so without a cnti-testsuite
+          # cluster the volumes of earlier runs are no longer in use.
+          label=org.lfn-cnti.testsuite-action=kind-storage
+          if [[ -z "$(docker ps -aq --filter label=io.x-k8s.kind.cluster=cnti-testsuite)" ]]; then
+            docker volume ls -q --filter "label=$label" | xargs -r docker volume rm >/dev/null || true
+          fi
+          volume="cnti-kind-storage-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${RANDOM}"
+          docker volume create --label "$label" "$volume" >/dev/null
+          export STORAGE_DIR="$(docker volume inspect -f '{{ .Mountpoint }}' "$volume")"
+          # A config without nodes is one control-plane node.
+          yq '.nodes = (.nodes // [{"role": "control-plane"}]) | .nodes[].extraMounts += [{"hostPath": strenv(STORAGE_DIR), "containerPath": "/var/local-path-provisioner"}]' "$src" > "$config"
+          shared=true
+        fi
+        echo "config=$config" >> "$GITHUB_OUTPUT"
+        echo "shared_storage=$shared" >> "$GITHUB_OUTPUT"
+
     - name: Create kind cluster
       if: inputs.create_kind_cluster == 'true' && inputs.kind_version == ''
       uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
       with:
         cluster_name: cnti-testsuite
-        config: ${{ inputs.kind_config != '' && inputs.kind_config || format('{0}/cnti-testsuite-kind.yaml', runner.temp) }}
+        config: ${{ steps.kind.outputs.config }}
 
     - name: Create kind cluster (pinned kind version)
       if: inputs.create_kind_cluster == 'true' && inputs.kind_version != ''
       uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
       with:
         cluster_name: cnti-testsuite
-        config: ${{ inputs.kind_config != '' && inputs.kind_config || format('{0}/cnti-testsuite-kind.yaml', runner.temp) }}
+        config: ${{ steps.kind.outputs.config }}
         version: ${{ inputs.kind_version }}
+
+    # The provisioner's shared mode: volumes on the directory every node mounts,
+    # without node affinity. The StorageClass stays `standard`, the default.
+    - name: Shared storage for kind
+      if: steps.kind.outputs.shared_storage == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        ns=local-path-storage
+        original=$(kubectl -n "$ns" get configmap local-path-config -o jsonpath='{.data.config\.json}')
+        set_config() {
+          kubectl -n "$ns" patch configmap local-path-config --type merge \
+            -p "$(CONFIG="$1" yq -n -o json '.data["config.json"] = strenv(CONFIG)')" >/dev/null
+          kubectl -n "$ns" rollout restart deployment local-path-provisioner >/dev/null
+          kubectl -n "$ns" rollout status deployment local-path-provisioner --timeout 2m || true
+        }
+        set_config '{"nodePathMap":[],"sharedFileSystemPath":"/var/local-path-provisioner"}'
+        # The provisioner logs the config it accepted (kind runs it with --debug);
+        # one without the shared mode (older kind images) never logs it.
+        for _ in $(seq 30); do
+          pod=$(kubectl -n "$ns" get pods -l app=local-path-provisioner --sort-by=.metadata.creationTimestamp -o name 2>/dev/null | tail -1 || true)
+          log=$( [[ -n "$pod" ]] && kubectl -n "$ns" logs "$pod" 2>/dev/null || true)
+          if grep -q 'Applied config.*sharedFileSystemPath' <<<"$log"; then
+            echo "Shared storage: volumes without node affinity"
+            exit 0
+          fi
+          sleep 2
+        done
+        echo "::warning::The kind node image's local-path provisioner did not take its shared mode; volumes stay on one node each, so node_drain cannot move a pod with a PersistentVolume"
+        set_config "$original"
 
     - name: Load images into kind
       if: inputs.create_kind_cluster == 'true' && inputs.kind_load_images != ''
