@@ -133,6 +133,42 @@ inputs:
     description: "What a regression (a test that failed or errored though expected_results expects it to pass, be skipped or n/a) does: warn (the default) or fail, which fails the job after the badge and the evidence are published."
     required: false
     default: "warn"
+  analyze:
+    description: "Opt-in AI analysis of the tests that failed or errored, also in a run that met its pass mark: the facts the suite recorded about them go to the model chosen below, and its reading of them is written to the job summary and cnti/analysis.md. Advisory: it never changes the verdict, the exit code, the badge or the evidence. Skipped on pull requests from forks and under pull_request_target. Needs a cnti-testsuite with `analyze` (lfn-cnti/testsuite#2873): the suite prepares the request and checks the answer, the action sends it with your key."
+    required: false
+    default: "false"
+  analyze_provider:
+    description: "Where the model runs: anthropic (Messages API) or openai-compatible (any server with /chat/completions: hosted services, or one of your own such as Ollama, llama.cpp or vLLM)."
+    required: false
+    default: "anthropic"
+  analyze_endpoint:
+    description: "Base URL of the model's API. Required for openai-compatible (e.g. https://host/v1); for anthropic it defaults to the public endpoint."
+    required: false
+    default: ""
+  analyze_model:
+    description: "The model id, e.g. claude-opus-5-5 for anthropic."
+    required: false
+    default: ""
+  analyze_api_key:
+    description: "The model API's key, from a secret. Optional for openai-compatible: a server of your own may need none."
+    required: false
+    default: ""
+  analyze_include:
+    description: "What the model gets: facts (the default: the suite's findings, the conditions it observed, the cluster's state when each test failed, and what each finding points to in its object) or logs (all that, plus the failed tests' lines of the run's debug log and the containers' last log lines). Logs are the workload's own output and are not redacted: with a hosted model, they leave your CI."
+    required: false
+    default: "facts"
+  analyze_max_facts_kb:
+    description: "The most the facts sent to the model may take, in KB (1 to 1024). Above it, the action cuts the debug log, the containers' log lines and then the cluster's state until they fit. About 4 bytes make a token: 48 KB is some 12,000 tokens. Raise it for a model with a large context window, lower it for a small one."
+    required: false
+    default: "48"
+  analyze_expected:
+    description: "Analyze the tests expected_results lists too."
+    required: false
+    default: "false"
+  analyze_comment:
+    description: "Also post the analysis on the pull request (needs permissions: pull-requests: write)."
+    required: false
+    default: "false"
 
 outputs:
   status:
@@ -529,6 +565,44 @@ runs:
         digest=$(cosign triangulate --type digest "$ref" 2>/dev/null || true)
         echo "Evidence attached to ${ref}${digest:+ (${digest})}; verify with: cosign verify-attestation --type https://in-toto.io/attestation/test-result/v0.1 --certificate-identity-regexp '^$IDENTITY' --certificate-oidc-issuer https://token.actions.githubusercontent.com $ref"
 
+    # Opt-in (#21): the tests that failed or errored, read by a model of the
+    # adopter's choice; a run that met its pass mark can have them too. After the evidence, so it is never part of it, nor of the badge.
+    # Only where the key is the repository's own: not on pull requests from
+    # forks, not under pull_request_target.
+    - name: AI analysis (advisory)
+      id: analyze
+      if: >-
+        always() && inputs.analyze == 'true' && steps.results.outputs.results_file != ''
+        && github.event_name != 'pull_request_target'
+        && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+      shell: bash
+      env:
+        ANALYZE_PROVIDER: ${{ inputs.analyze_provider }}
+        ANALYZE_ENDPOINT: ${{ inputs.analyze_endpoint }}
+        ANALYZE_MODEL: ${{ inputs.analyze_model }}
+        ANALYZE_API_KEY: ${{ inputs.analyze_api_key }}
+        ANALYZE_INCLUDE: ${{ inputs.analyze_include }}
+        ANALYZE_MAX_FACTS_KB: ${{ inputs.analyze_max_facts_kb }}
+        EXPECTED_RESULTS: ${{ inputs.expected_results }}
+        ANALYZE_EXPECTED: ${{ inputs.analyze_expected }}
+        RESULTS_FILE: ${{ steps.results.outputs.results_file }}
+      run: bash "${{ github.action_path }}/scripts/analyze.sh"
+
+    - name: Comment the AI analysis
+      if: always() && steps.analyze.outputs.file != '' && inputs.analyze_comment == 'true' && github.event_name == 'pull_request'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        ANALYSIS: ${{ steps.analyze.outputs.file }}
+        COMMENTS_URL: ${{ github.event.pull_request.comments_url }}
+      run: |
+        set -uo pipefail
+        export BODY_FILE="$ANALYSIS"
+        status=$(yq -n -o=json '.body = load_str(strenv(BODY_FILE))' \
+          | curl -sS -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" --data-binary @- "$COMMENTS_URL") || status=""
+        [[ "$status" == 201 ]] || echo "::warning::The AI analysis was not posted on the pull request (HTTP ${status:-none}; needs permissions: pull-requests: write)"
+
     - name: Uninstall CNF
       # A kind cluster created here dies with the job; only clean up clusters we were given.
       if: always() && inputs.create_kind_cluster != 'true'
@@ -543,6 +617,7 @@ runs:
         path: |
           cnti/results/
           cnti/evidence/
+          cnti/analysis.md
         if-no-files-found: ignore
 
     - name: Publish badge

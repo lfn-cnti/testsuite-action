@@ -1,0 +1,30 @@
+{
+ "tests": [
+  {
+   "name": "node_drain",
+   "likely_cause": "The volume of db-0 is bound to the drained node, so the pod cannot be scheduled elsewhere.",
+   "supported_by": [
+    "T1-C1",
+    "T1-R1",
+    "T9-X1"
+   ],
+   "confidence": "high",
+   "next_step": {
+    "kind": "check_runner_or_cluster",
+    "detail": "Use storage that follows a pod to another node."
+   }
+  },
+  {
+   "name": "zombie_handled",
+   "likely_cause": "PID 1 does not reap orphans",
+   "supported_by": [
+    "T2-R1"
+   ],
+   "confidence": "high",
+   "next_step": {
+    "kind": "chart_change",
+    "detail": "an init such as tini in the image"
+   }
+  }
+ ]
+}
