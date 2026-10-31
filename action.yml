@@ -125,6 +125,51 @@ inputs:
     required: false
     default: "false"
 
+  expected_results:
+    description: "Path to a YAML list of the results you know and accept, each {test, status, reason}; a test it doesn't list is expected to pass. Every test whose result differs is reported in the job summary and as a warning, and named in the regressions, improvements and changed outputs. The badge doesn't change."
+    required: false
+    default: ""
+  on_regression:
+    description: "What a regression (a test that failed or errored though expected_results expects it to pass, be skipped or n/a) does: warn (the default) or fail, which fails the job after the badge and the evidence are published."
+    required: false
+    default: "warn"
+  analyze:
+    description: "Opt-in AI analysis of the tests that failed or errored, also in a run that met its pass mark: the facts the suite recorded about them go to the model chosen below, and its reading of them is written to the job summary and cnti/analysis.md. Advisory: it never changes the verdict, the exit code, the badge or the evidence. Skipped on pull requests from forks and under pull_request_target. Needs a cnti-testsuite with `analyze` (lfn-cnti/testsuite#2873): the suite prepares the request and checks the answer, the action sends it with your key."
+    required: false
+    default: "false"
+  analyze_provider:
+    description: "Where the model runs: anthropic (Messages API) or openai-compatible (any server with /chat/completions: hosted services, or one of your own such as Ollama, llama.cpp or vLLM)."
+    required: false
+    default: "anthropic"
+  analyze_endpoint:
+    description: "Base URL of the model's API. Required for openai-compatible (e.g. https://host/v1); for anthropic it defaults to the public endpoint."
+    required: false
+    default: ""
+  analyze_model:
+    description: "The model id, e.g. claude-opus-5-5 for anthropic."
+    required: false
+    default: ""
+  analyze_api_key:
+    description: "The model API's key, from a secret. Optional for openai-compatible: a server of your own may need none."
+    required: false
+    default: ""
+  analyze_include:
+    description: "What the model gets: facts (the default: the suite's findings, the conditions it observed, the cluster's state when each test failed, and what each finding points to in its object) or logs (all that, plus the failed tests' lines of the run's debug log and the containers' last log lines). Logs are the workload's own output and are not redacted: with a hosted model, they leave your CI."
+    required: false
+    default: "facts"
+  analyze_max_facts_kb:
+    description: "The most the facts sent to the model may take, in KB (1 to 1024). Above it, the action cuts the debug log, the containers' log lines and then the cluster's state until they fit. About 4 bytes make a token: 48 KB is some 12,000 tokens. Raise it for a model with a large context window, lower it for a small one."
+    required: false
+    default: "48"
+  analyze_expected:
+    description: "Analyze the tests expected_results lists too."
+    required: false
+    default: "false"
+  analyze_comment:
+    description: "Also post the analysis on the pull request (needs permissions: pull-requests: write)."
+    required: false
+    default: "false"
+
 outputs:
   status:
     description: "Overall verdict of the run: passed, failed or error."
@@ -156,6 +201,15 @@ outputs:
   results_file:
     description: "Path to the results YAML of this run."
     value: ${{ steps.results.outputs.results_file }}
+  regressions:
+    description: "Comma-separated tests that failed or errored though expected_results expects them to pass, be skipped or n/a; empty without expected_results."
+    value: ${{ steps.expected.outputs.regressions }}
+  improvements:
+    description: "Comma-separated tests that passed though expected_results lists them as not passing (remove their entries)."
+    value: ${{ steps.expected.outputs.improvements }}
+  changed:
+    description: "Comma-separated tests whose result differs from expected_results in any way, regressions and improvements included."
+    value: ${{ steps.expected.outputs.changed }}
 
 runs:
   using: "composite"
@@ -347,6 +401,18 @@ runs:
         RUN_EXIT_CODE: ${{ steps.run.outputs.exit_code }}
       run: bash "${{ github.action_path }}/scripts/read_results.sh"
 
+    # The adopter's expected results (#11): every test whose result differs, in
+    # the summary, as warnings and in the outputs. Never fails here: see
+    # "Enforce expected results".
+    - name: Compare with the expected results
+      id: expected
+      if: always() && steps.results.outputs.results_file != ''
+      shell: bash
+      env:
+        RESULTS_FILE: ${{ steps.results.outputs.results_file }}
+        EXPECTED_RESULTS: ${{ inputs.expected_results }}
+      run: bash "${{ github.action_path }}/scripts/compare_expected.sh"
+
     # The bundle a project publishes next to its badge, from the suite's own
     # `evidence` subcommand (cnti-testsuite v2.3.0 or newer): the badge (SVG,
     # shields.io JSON), the in-toto Test Result statement, the results file and
@@ -499,6 +565,44 @@ runs:
         digest=$(cosign triangulate --type digest "$ref" 2>/dev/null || true)
         echo "Evidence attached to ${ref}${digest:+ (${digest})}; verify with: cosign verify-attestation --type https://in-toto.io/attestation/test-result/v0.1 --certificate-identity-regexp '^$IDENTITY' --certificate-oidc-issuer https://token.actions.githubusercontent.com $ref"
 
+    # Opt-in (#21): the tests that failed or errored, read by a model of the
+    # adopter's choice; a run that met its pass mark can have them too. After the evidence, so it is never part of it, nor of the badge.
+    # Only where the key is the repository's own: not on pull requests from
+    # forks, not under pull_request_target.
+    - name: AI analysis (advisory)
+      id: analyze
+      if: >-
+        always() && inputs.analyze == 'true' && steps.results.outputs.results_file != ''
+        && github.event_name != 'pull_request_target'
+        && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+      shell: bash
+      env:
+        ANALYZE_PROVIDER: ${{ inputs.analyze_provider }}
+        ANALYZE_ENDPOINT: ${{ inputs.analyze_endpoint }}
+        ANALYZE_MODEL: ${{ inputs.analyze_model }}
+        ANALYZE_API_KEY: ${{ inputs.analyze_api_key }}
+        ANALYZE_INCLUDE: ${{ inputs.analyze_include }}
+        ANALYZE_MAX_FACTS_KB: ${{ inputs.analyze_max_facts_kb }}
+        EXPECTED_RESULTS: ${{ inputs.expected_results }}
+        ANALYZE_EXPECTED: ${{ inputs.analyze_expected }}
+        RESULTS_FILE: ${{ steps.results.outputs.results_file }}
+      run: bash "${{ github.action_path }}/scripts/analyze.sh"
+
+    - name: Comment the AI analysis
+      if: always() && steps.analyze.outputs.file != '' && inputs.analyze_comment == 'true' && github.event_name == 'pull_request'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        ANALYSIS: ${{ steps.analyze.outputs.file }}
+        COMMENTS_URL: ${{ github.event.pull_request.comments_url }}
+      run: |
+        set -uo pipefail
+        export BODY_FILE="$ANALYSIS"
+        status=$(yq -n -o=json '.body = load_str(strenv(BODY_FILE))' \
+          | curl -sS -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" --data-binary @- "$COMMENTS_URL") || status=""
+        [[ "$status" == 201 ]] || echo "::warning::The AI analysis was not posted on the pull request (HTTP ${status:-none}; needs permissions: pull-requests: write)"
+
     - name: Uninstall CNF
       # A kind cluster created here dies with the job; only clean up clusters we were given.
       if: always() && inputs.create_kind_cluster != 'true'
@@ -513,6 +617,7 @@ runs:
         path: |
           cnti/results/
           cnti/evidence/
+          cnti/analysis.md
         if-no-files-found: ignore
 
     - name: Publish badge
@@ -563,6 +668,21 @@ runs:
         RUN_EXIT_CODE: ${{ steps.run.outputs.exit_code }}
         GH_TOKEN: ${{ github.token }}
       run: bash "${{ github.action_path }}/scripts/publish_evidence.sh"
+
+    # After the badge and the evidence: a regression with on_regression: fail
+    # fails the job, while the badge still says what the run scored.
+    - name: Enforce expected results
+      if: always() && inputs.expected_results != ''
+      shell: bash
+      env:
+        ON_REGRESSION: ${{ inputs.on_regression }}
+        REGRESSIONS: ${{ steps.expected.outputs.regressions }}
+      run: |
+        case "$ON_REGRESSION" in
+          warn) ;;
+          fail) if [[ -n "$REGRESSIONS" ]]; then echo "::error::Regressions against expected_results: ${REGRESSIONS//,/, }"; exit 1; fi ;;
+          *) echo "::warning::on_regression is '$ON_REGRESSION': warn or fail; warning only" ;;
+        esac
 
     - name: Enforce result
       if: always() && inputs.fail_on_failure == 'true'

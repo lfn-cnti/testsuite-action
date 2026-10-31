@@ -74,6 +74,17 @@ Existing cluster (self-hosted runner with `$KUBECONFIG` set):
 | `kind_version` | | kind version; empty uses the [helm/kind-action](https://github.com/helm/kind-action) default |
 | `kind_load_images` | | Local Docker images to load into the kind cluster (whitespace-separated) |
 | `fail_on_failure` | `true` | Fail the job when the run exits non-zero |
+| `analyze` | `false` | Opt-in AI analysis of the tests that failed or errored, advisory (see [AI analysis](#ai-analysis)) |
+| `analyze_provider` | `anthropic` | `anthropic` or `openai-compatible` (any `/chat/completions` server, a self-hosted one included) |
+| `analyze_endpoint` | | Base URL of the model's API; required for `openai-compatible` |
+| `analyze_model` | | The model id |
+| `analyze_api_key` | | The API key, from a secret; optional for `openai-compatible` |
+| `analyze_include` | `facts` | What the model gets: `facts`, or `logs` (the facts plus the failed tests' debug-log lines and the containers' last lines) |
+| `analyze_max_facts_kb` | `48` | The most the facts sent to the model may take, in KB; above it, logs are cut first |
+| `analyze_expected` | `false` | Analyze the expected results too |
+| `analyze_comment` | `false` | Also post the analysis on the pull request (needs `pull-requests: write`) |
+| `expected_results` | | A YAML list of the results you know and accept (`{test, status, reason}`); every test that differs is reported (see [Expected results](#expected-results)) |
+| `on_regression` | `warn` | `fail` fails the job on a regression against `expected_results`, after the badge is published |
 | `upload_results` | `true` | Upload `cnti/results/` and `cnti/evidence/` as an artifact: every run's full evidence is downloadable from the run page, whether or not a badge or an evidence repository is set |
 | `artifact_name` | `cnti-testsuite-results` | Artifact name |
 | `badge_branch` | | Publish `cnti-badge.svg`/`.json` to this orphan branch with `GITHUB_TOKEN` (needs `permissions: contents: write`); default branch only |
@@ -94,6 +105,7 @@ One of `cnf_config` or `helm_chart_dir` is required.
 | `points` / `maximum_points` | Points scored / maximum |
 | `criteria` | Pass criterion of the run as compact JSON (e.g. the essential-tests threshold of `cert`); empty when the task has none |
 | `results_file` | Path to the results YAML |
+| `regressions` / `improvements` / `changed` | Comma-separated tests that differ from `expected_results`: failed or errored though expected to pass, skip or be n/a; passed though listed as not passing; any difference |
 
 ```yaml
 - uses: lfn-cnti/testsuite-action@v1
@@ -265,6 +277,125 @@ access can pull the attestation. The statement records the reference in
 GitHub attestations were made too, which it then keeps. The reference is recorded before anything signs
 the statement, so the bundle's statement is the one both signatures cover; if attaching fails,
 the reference is taken out again.
+
+## Expected results
+
+The badge says whether the essential tests passed, not when something changed while they still
+pass: a chart at 16 of 19 that drops to 15, or a test that starts failing while another starts
+passing, keeps the same badge. List the results you know and accept in a file in your repository,
+and the action tells you when a run differs from it:
+
+```yaml
+# .github/cnti/expected.yaml
+- test: hostpath_mounts
+  status: failed
+  reason: /sys/fs/bpf from the node is required by the non-root design
+- test: specialized_init_system
+  status: failed
+  reason: no init in the image yet
+```
+
+```yaml
+- uses: lfn-cnti/testsuite-action@v1
+  with:
+    cnf_config: cnti-testsuite.yaml
+    expected_results: .github/cnti/expected.yaml
+```
+
+A test the file doesn't list is expected to pass. Every test whose result differs from the file is
+in the job summary, as a warning, and in the outputs:
+
+- **a regression**: it failed or errored, though expected to pass, be skipped or be n/a;
+- **an improvement**: it passed, though listed as not passing. Remove its entry, so the file stays
+  the record: a chart fix or a suite upgrade that changes a result updates the file in the same
+  pull request;
+- **changed**: any difference, those two included (`failed` to `error`, `skipped` to `na`, ...).
+
+Entries for tests the run didn't include are ignored, so one file serves a `cert` run and a
+`workload` run. `on_regression: fail` fails the job when there is a regression, after the badge
+and the evidence are published: the badge still says what the run scored, and GitHub emails the
+workflow's owner about the failed run. The badge itself never changes. A file that can't be read
+is a warning, and the results are then not compared.
+
+## AI analysis
+
+When the essential tests don't pass, the job says which tests failed; understanding why takes
+reading the results, the events and the logs. With `analyze: true`, the action sends the facts
+the suite recorded about the failed tests to a model you choose, and writes its reading of them
+to the job summary and to `cnti/analysis.md` in the artifact:
+
+```yaml
+permissions:
+  contents: read
+steps:
+  - uses: lfn-cnti/testsuite-action@v1
+    with:
+      cnf_config: cnti-testsuite.yaml
+      analyze: true
+      analyze_provider: anthropic
+      analyze_model: claude-opus-5-5
+      analyze_api_key: ${{ secrets.CNTI_ANALYZE_KEY }}
+```
+
+With `openai-compatible`, `analyze_endpoint` points at any server that speaks
+`/chat/completions`: a hosted service, or one of your own (Ollama, llama.cpp, vLLM), which needs
+no key and is the choice for code whose data must not leave your network. The self-test runs it
+against a small model in Ollama on the runner.
+
+- **When:** whenever a test failed or errored, also in a run that met its pass mark (a `cert`
+  run at 16 of 19 has three failures worth reading), and only where the key is
+  the repository's own: not on pull requests from forks, which get no secrets, and not under
+  `pull_request_target`.
+- **Who does what:** the suite prepares the request and checks the answer
+  (`cnti-testsuite analyze prepare` and `render`, so it needs a cnti-testsuite with `analyze`); the
+  action sends the request, with your key. The key never enters the suite, whose debug log is in
+  the artifact, and the facts, the prompt and the provider formats are the suite's, the same for
+  the GitHub Action and the GitLab component.
+- **What is sent:** the facts the suite recorded about the run's failed and errored tests (`explain`'s,
+  with every fact cited by an id), plus the suite's and its tools' versions, at
+  most `analyze_max_facts_kb` (48 KB, some 12,000 tokens, by default). `analyze_include` sets
+  how much:
+  - `facts` (the default): what each test checks, its result, the impacted resources, the
+    remediation, the conditions the suite observed, and the cluster's state when it failed (pods,
+    nodes, events, the impacted objects' status and the fragment each finding points to, such as
+    the volume behind `spec.template.spec.volumes[0]`).
+  - `logs`: the facts, plus the failed tests' lines of the run's debug log and each container's
+    last 20 log lines. Log lines are the first thing cut when the 48 KB are exceeded.
+
+  Logs are not the default because they are the workload's own output: not redacted (whatever
+  the CNF prints, tokens and subscriber data included), text the workload controls, and large.
+  With a model of your own (`openai-compatible` on your network or the runner) the first reason
+  doesn't apply, and `logs` is the better choice. Event messages are part of the facts and can
+  quote the workload too, a probe's output for example.
+- **What comes back:** per test, the likely cause, the facts that support it, a confidence (or
+  "insufficient evidence"), and one next step: a chart change, a check of the runner or the
+  cluster, or a re-run. Every fact sent carries an id (`T2-R1`: test 2's first impacted
+  resource), and the model cites ids, not text: the summary shows the suite's own words for each
+  one, an id that isn't one of the facts is left out (and named in the job's log), and a cause
+  with no fact left is marked unsupported, with low confidence. The prompt is versioned in the suite. The section names the
+  model and says it is advisory; the model's text is shown as plain text, without links or
+  images.
+- **What it can't do:** the model gets one request with no tools: no files, no shell, no token.
+  Text the workload injected into a log can at most make a misleading answer, which is labelled
+  advisory. The key goes only to the API call, from a header file, and is masked in the logs.
+- **Never part of the verdict:** the analysis doesn't change the exit code, the badge or the
+  evidence, and isn't in the evidence bundle or the signed statement. An unreachable endpoint, a
+  refusal or an answer that isn't the expected JSON is a warning; the job goes on.
+- **Declines:** on Anthropic's API, requests to `claude-fable-5-1`, `claude-opus-5-5`,
+  `claude-opus-5` and `claude-sonnet-5-5` opt into server-side fallback (`fallbacks: "default"`):
+  a request a safety classifier declines is re-run on the model the API picks, and the summary
+  names the model that answered.
+
+### Known failures are not analyzed
+
+A known failure doesn't need a model to explain it on every run. A test that failed or errored
+with the status [`expected_results`](#expected-results) lists for it is not sent to the model:
+the summary lists it under "Expected results" with your reason. Anything else is analyzed: a test
+the file doesn't list, or one with another status than listed (an `error` where `failed` is
+expected). When every failure is expected, no model is asked at all. `analyze_expected: true`
+analyzes the listed ones too. An entry matches on the test and its status only, so a known
+failure that starts failing for a further reason still counts as expected: keep the reasons
+current, and set `analyze_expected` when in doubt.
 
 ## Requirements
 

@@ -1,0 +1,26 @@
+# A run with two failed tests and one passed, for the analysis self-tests:
+# node_drain is T1 in the facts (T1-R1 its impacted resource, T1-C1 its
+# observed condition), zombie_handled T2.
+testsuite_version: v2.4.0
+status: failed
+tools:
+  litmus: 3.20.0
+items:
+  - name: node_drain
+    status: failed
+    type: essential
+    message: "node_drain failed: 1 workload(s) did not come back after a drain"
+    impacted_resources:
+      - {kind: StatefulSet, name: db, namespace: cnf, reason: not Ready within 180s of eviction}
+    observed_conditions:
+      - {kind: scheduling_failed, object: Pod/db-0 in cnf, detail: "0/3 nodes are available: 2 node(s) didn't match PersistentVolume's node affinity"}
+  - name: zombie_handled
+    status: failed
+    type: essential
+    message: Zombie not handled
+    impacted_resources:
+      - {kind: Pod, name: db-0, namespace: cnf, container: db, reason: "process sleep (pid 9) is a zombie"}
+  - name: liveness
+    status: passed
+    type: essential
+    message: ok
