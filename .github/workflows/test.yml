@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   coredns:
-    name: coredns (${{ matrix.version }}${{ matrix.extra_args && format(' {0}', matrix.extra_args) || '' }})
+    name: coredns (${{ matrix.version }}${{ matrix.extra_args && format(' {0}', matrix.extra_args) || '' }}${{ matrix.expected_results && ' expected_results' || '' }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -28,6 +28,13 @@ jobs:
           - version: latest
             extra_args: --strict
             expect_exit: "1"
+          # expected_results through the whole action: CoreDNS passes, so a test
+          # listed as failing is an improvement, and on_regression: fail has no
+          # regression to fail on.
+          - version: latest
+            extra_args: ""
+            expect_exit: "0"
+            expected_results: .github/fixtures/expected/coredns.yaml
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Fetch example CNF
@@ -45,6 +52,8 @@ jobs:
           extra_args: ${{ matrix.extra_args }}
           log_level: info
           fail_on_failure: false
+          expected_results: ${{ matrix.expected_results || '' }}
+          on_regression: fail
       - name: Check outputs
         run: |
           echo "status=${{ steps.cnti.outputs.status }} exit=${{ steps.cnti.outputs.exit_code }}"
@@ -52,6 +61,71 @@ jobs:
           test -n "${{ steps.cnti.outputs.results_file }}"
           test "${{ steps.cnti.outputs.exit_code }}" = "${{ matrix.expect_exit }}"
           test -n "${{ steps.cnti.outputs.maximum_points }}"
+          if [[ -n "${{ matrix.expected_results }}" ]]; then
+            test "${{ steps.cnti.outputs.improvements }}" = "liveness"
+            test -z "${{ steps.cnti.outputs.regressions }}"
+          fi
+
+  # The comparison with expected_results (#11), on a results file and an
+  # expectations file of every kind of difference, and on the files it must not
+  # accept.
+  expected-results:
+    name: expected results
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check the comparison
+        run: |
+          set -euo pipefail
+          f=.github/fixtures/expected
+          t=$(mktemp -d)
+          compare() { # expected-file label
+            : > "$t/$2.out"; : > "$t/$2.md"
+            GITHUB_OUTPUT="$t/$2.out" GITHUB_STEP_SUMMARY="$t/$2.md" RESULTS_FILE=$f/results.yml EXPECTED_RESULTS=$1 \
+              bash scripts/compare_expected.sh | tee "$t/$2.log"
+          }
+          compare $f/expected.yaml main
+          cat "$t/main.out" "$t/main.md"
+          grep -qx 'regressions=liveness' "$t/main.out"
+          grep -qx 'improvements=hostpath_mounts' "$t/main.out"
+          grep -qx 'changed=hostpath_mounts,liveness,node_drain' "$t/main.out"
+          grep -qF '| `hostpath_mounts` | failed | **passed** | improvement: remove its entry; listed because: /sys/fs/bpf from the node is required by the non-root design |' "$t/main.md"
+          grep -qF '| `liveness` | passed | **failed** | regression |' "$t/main.md"
+          grep -qF '| `node_drain` | skipped | **na** | changed |' "$t/main.md"
+          grep -q '3 of the 5 tests differ from the file: 1 regression(s), 1 improvement(s)' "$t/main.md"
+          grep -q "::warning::liveness: expected passed, now failed (regression)" "$t/main.log"
+          grep -q "::warning::expected_results lists not_run without a status of a results file .*it has 'broken'.*: not_run is not compared" "$t/main.log"
+          if grep -q zombie_handled "$t/main.out"; then echo "::error::a test failing as listed is a change"; exit 1; fi
+
+          printf -- '- test: hostpath_mounts\n  status: passed\n- {test: zombie_handled, status: failed}\n- {test: liveness, status: failed}\n- {test: node_drain, status: na}\n' > "$t/same.yaml"
+          compare "$t/same.yaml" same
+          grep -q "Every one of the 5 tests has the result the file expects" "$t/same.md"
+          grep -qx 'changed=' "$t/same.out"
+
+          # A misspelled key leaves the test known but its status unknown: it is
+          # not compared, so its known failure is no regression. An entry
+          # without a test is ignored. A | in a reason stays in its cell.
+          printf -- '- {test: zombie_handled, stauts: failed}\n- {status: failed, reason: no test}\n- {test: liveness, status: failed}\n- {test: node_drain, status: failed, reason: "kubectl get pods | grep coredns"}\n' > "$t/typo.yaml"
+          compare "$t/typo.yaml" typo
+          grep -q "lists zombie_handled without a status of a results file .*: zombie_handled is not compared" "$t/typo.log"
+          grep -q "has an entry without a test: it is ignored" "$t/typo.log"
+          if grep -q zombie_handled "$t/typo.out"; then echo "::error::an entry without a status made a change"; exit 1; fi
+          grep -qx 'regressions=' "$t/typo.out"
+          grep -qx 'changed=node_drain' "$t/typo.out"
+          grep -qF '| `node_drain` | failed | **na** | changed; listed because: kubectl get pods \| grep coredns |' "$t/typo.md"
+
+          echo 'not: a list' > "$t/bad.yaml"
+          compare "$t/bad.yaml" bad
+          grep -q "is not a list of {test, status, reason}: the results are not compared" "$t/bad.log"
+          grep -qx 'regressions=' "$t/bad.out"
+          test ! -s "$t/bad.md"
+
+          compare "$t/missing.yaml" missing
+          grep -q "is not a file: the results are not compared" "$t/missing.log"
+
+          compare "" none
+          grep -qx 'changed=' "$t/none.out"
+          test ! -s "$t/none.md"
 
   # A suite without `cnti-testsuite evidence` (before v2.3.0) and a run that asks
   # for the badge: the action must fail, not skip the badge quietly.
