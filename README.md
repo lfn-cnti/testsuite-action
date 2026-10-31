@@ -74,6 +74,8 @@ Existing cluster (self-hosted runner with `$KUBECONFIG` set):
 | `kind_version` | | kind version; empty uses the [helm/kind-action](https://github.com/helm/kind-action) default |
 | `kind_load_images` | | Local Docker images to load into the kind cluster (whitespace-separated) |
 | `fail_on_failure` | `true` | Fail the job when the run exits non-zero |
+| `expected_results` | | A YAML list of the results you know and accept (`{test, status, reason}`); every test that differs is reported (see [Expected results](#expected-results)) |
+| `on_regression` | `warn` | `fail` fails the job on a regression against `expected_results`, after the badge is published |
 | `upload_results` | `true` | Upload `cnti/results/` and `cnti/evidence/` as an artifact: every run's full evidence is downloadable from the run page, whether or not a badge or an evidence repository is set |
 | `artifact_name` | `cnti-testsuite-results` | Artifact name |
 | `badge_branch` | | Publish `cnti-badge.svg`/`.json` to this orphan branch with `GITHUB_TOKEN` (needs `permissions: contents: write`); default branch only |
@@ -94,6 +96,7 @@ One of `cnf_config` or `helm_chart_dir` is required.
 | `points` / `maximum_points` | Points scored / maximum |
 | `criteria` | Pass criterion of the run as compact JSON (e.g. the essential-tests threshold of `cert`); empty when the task has none |
 | `results_file` | Path to the results YAML |
+| `regressions` / `improvements` / `changed` | Comma-separated tests that differ from `expected_results`: failed or errored though expected to pass, skip or be n/a; passed though listed as not passing; any difference |
 
 ```yaml
 - uses: lfn-cnti/testsuite-action@v1
@@ -265,6 +268,49 @@ access can pull the attestation. The statement records the reference in
 GitHub attestations were made too, which it then keeps. The reference is recorded before anything signs
 the statement, so the bundle's statement is the one both signatures cover; if attaching fails,
 the reference is taken out again.
+
+## Expected results
+
+The badge says whether the essential tests passed, not when something changed while they still
+pass: a chart at 16 of 19 that drops to 15, or a test that starts failing while another starts
+passing, keeps the same badge. List the results you know and accept in a file in your repository,
+and the action tells you when a run differs from it:
+
+```yaml
+# .github/cnti/expected.yaml
+- test: hostpath_mounts
+  status: failed
+  reason: /sys/fs/bpf from the node is required by the non-root design
+- test: specialized_init_system
+  status: failed
+  reason: no init in the image yet
+```
+
+```yaml
+- uses: lfn-cnti/testsuite-action@v1
+  with:
+    cnf_config: cnti-testsuite.yaml
+    expected_results: .github/cnti/expected.yaml
+```
+
+A test the file doesn't list is expected to pass. Every test whose result differs from the file is
+in the job summary, as a warning, and in the outputs:
+
+- **a regression**: it failed or errored, though expected to pass, be skipped or be n/a;
+- **an improvement**: it passed, though listed as not passing. Remove its entry, so the file stays
+  the record: a chart fix or a suite upgrade that changes a result updates the file in the same
+  pull request;
+- **changed**: any difference, those two included (`failed` to `error`, `skipped` to `na`, ...).
+
+Entries for tests the run didn't include are ignored, so one file serves a `cert` run and a
+`workload` run. `on_regression: fail` fails the job when there is a regression, after the badge
+and the evidence are published: the badge still says what the run scored, and GitHub emails the
+workflow's owner about the failed run. The badge itself never changes. A file that can't be read
+is a warning, and the results are then not compared.
+
+The suite does the comparison (`cnti-testsuite compare`, so the GitLab component and a local run
+read the file the same way): `expected_results` needs a cnti-testsuite with `compare`
+(lfn-cnti/testsuite#2872). With an older one it is a warning, and nothing is compared.
 
 ## Requirements
 
