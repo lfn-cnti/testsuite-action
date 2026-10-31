@@ -1,0 +1,16 @@
+# CoreDNS's known failures on its chart defaults (example-cnfs/coredns), and
+# liveness, which CoreDNS passes, listed as failing so the run has an
+# improvement. A new failure of CoreDNS's would show here as a regression and
+# fail the self-test (on_regression: fail).
+- test: non_root_containers
+  status: failed
+  reason: the CoreDNS image runs as root
+- test: specialized_init_system
+  status: failed
+  reason: coredns is PID 1
+- test: zombie_handled
+  status: failed
+  reason: coredns is PID 1
+- test: liveness
+  status: failed
+  reason: a stand-in entry for the self-test

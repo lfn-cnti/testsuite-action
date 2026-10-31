@@ -1,0 +1,12 @@
+status: failed
+items:
+  - name: hostpath_mounts
+    status: passed
+  - name: zombie_handled
+    status: failed
+  - name: liveness
+    status: failed
+  - name: node_drain
+    status: na
+  - name: readiness
+    status: passed

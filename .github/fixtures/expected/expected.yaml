@@ -1,0 +1,14 @@
+# hostpath_mounts now passes (an improvement), zombie_handled fails as listed,
+# liveness is not listed and fails (a regression), node_drain is listed as
+# skipped and is n/a (changed), and the last entry has no status of a results
+# file.
+- test: hostpath_mounts
+  status: failed
+  reason: /sys/fs/bpf from the node is required by the non-root design
+- test: zombie_handled
+  status: failed
+  reason: no init in the image yet
+- test: node_drain
+  status: skipped
+- test: not_run
+  status: broken
