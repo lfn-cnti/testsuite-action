@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   coredns:
-    name: coredns (${{ matrix.version }}${{ matrix.extra_args && format(' {0}', matrix.extra_args) || '' }})
+    name: coredns (${{ matrix.version }}${{ matrix.extra_args && format(' {0}', matrix.extra_args) || '' }}${{ matrix.expected_results && ' expected_results' || '' }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -28,8 +28,29 @@ jobs:
           - version: latest
             extra_args: --strict
             expect_exit: "1"
+          # expected_results through the whole action: CoreDNS passes, so a test
+          # listed as failing is an improvement, and on_regression: fail has no
+          # regression to fail on.
+          - version: latest
+            extra_args: ""
+            expect_exit: "0"
+            expected_results: .github/fixtures/expected/coredns.yaml
+    needs: suite-with-compare
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # expected_results needs a suite with compare: the branch build, through
+      # binary_url, under a tag of this run so no other run's cache is used.
+      - if: matrix.expected_results
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: cnti-testsuite-compare
+          path: ${{ runner.temp }}/suite
+      - if: matrix.expected_results
+        id: suite
+        run: |
+          tarball="$RUNNER_TEMP/suite/cnti-testsuite-compare-${{ github.run_id }}-${{ github.run_attempt }}.tar.gz"
+          mv "$RUNNER_TEMP/suite/cnti-testsuite-compare.tar.gz" "$tarball"
+          echo "binary_url=file://$tarball" >> "$GITHUB_OUTPUT"
       - name: Fetch example CNF
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -41,10 +62,13 @@ jobs:
         uses: ./
         with:
           version: ${{ matrix.version }}
+          binary_url: ${{ steps.suite.outputs.binary_url }}
           cnf_config: testsuite/example-cnfs/coredns/cnti-testsuite.yaml
           extra_args: ${{ matrix.extra_args }}
           log_level: info
           fail_on_failure: false
+          expected_results: ${{ matrix.expected_results || '' }}
+          on_regression: fail
       - name: Check outputs
         run: |
           echo "status=${{ steps.cnti.outputs.status }} exit=${{ steps.cnti.outputs.exit_code }}"
@@ -52,6 +76,108 @@ jobs:
           test -n "${{ steps.cnti.outputs.results_file }}"
           test "${{ steps.cnti.outputs.exit_code }}" = "${{ matrix.expect_exit }}"
           test -n "${{ steps.cnti.outputs.maximum_points }}"
+          if [[ -n "${{ matrix.expected_results }}" ]]; then
+            test "${{ steps.cnti.outputs.improvements }}" = "liveness"
+            test -z "${{ steps.cnti.outputs.regressions }}"
+          fi
+
+  # The suite compares (lfn-cnti/testsuite#2872); until a release has
+  # `compare`, the expected-results jobs use a build of that branch, packed
+  # like a release so the action can install it through binary_url.
+  suite-with-compare:
+    name: suite with compare (until a release has it)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: lfn-cnti/testsuite
+          ref: feat/compare
+          path: testsuite-src
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD/testsuite-src:/workspace" -w /workspace crystallang/crystal:1.19.1-alpine-build sh -c "\
+            git config --global --add safe.directory /workspace && shards install && \
+            crystal build src/cnti-testsuite.cr --static --link-flags '-lxml2 -llzma'"
+          tar -czf cnti-testsuite-compare.tar.gz -C testsuite-src cnti-testsuite
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cnti-testsuite-compare
+          path: cnti-testsuite-compare.tar.gz
+          retention-days: 1
+
+  # The wrapper around the suite's comparison, on a results file and an
+  # expectations file of every kind of difference, on the files the suite
+  # refuses, and with a suite that has no `compare`. What counts as a
+  # difference is the suite's, and its specs test it.
+  expected-results:
+    name: expected results
+    needs: suite-with-compare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: cnti-testsuite-compare
+          path: ${{ runner.temp }}/suite
+      - name: Check the comparison
+        run: |
+          set -euo pipefail
+          tar -C "$RUNNER_TEMP/suite" -xzf "$RUNNER_TEMP/suite/cnti-testsuite-compare.tar.gz"
+          export PATH="$RUNNER_TEMP/suite:$PATH"
+          f=.github/fixtures/expected
+          t=$(mktemp -d)
+          compare() { # expected-file label
+            : > "$t/$2.out"; : > "$t/$2.md"
+            GITHUB_OUTPUT="$t/$2.out" GITHUB_STEP_SUMMARY="$t/$2.md" RESULTS_FILE=$f/results.yml EXPECTED_RESULTS=$1 \
+              bash scripts/compare_expected.sh | tee "$t/$2.log"
+          }
+          compare $f/expected.yaml main
+          cat "$t/main.out" "$t/main.md"
+          grep -qx 'regressions=liveness' "$t/main.out"
+          grep -qx 'improvements=hostpath_mounts' "$t/main.out"
+          grep -qx 'changed=hostpath_mounts,liveness,node_drain' "$t/main.out"
+          grep -qF '| `hostpath_mounts` | failed | **passed** | improvement: remove its entry; listed because: /sys/fs/bpf from the node is required by the non-root design |' "$t/main.md"
+          grep -qF '| `liveness` | passed | **failed** | regression |' "$t/main.md"
+          grep -q '3 of the 5 compared tests differ from the file: 1 regression(s), 1 improvement(s)' "$t/main.md"
+          grep -qx "::warning::liveness: expected passed, now failed (regression)" "$t/main.log"
+          grep -qF "::warning::hostpath_mounts: expected failed, now passed (improvement); listed because: /sys/fs/bpf" "$t/main.log"
+          grep -q "::warning::.*lists not_run without a status of a results file .*it has 'broken'.*: not_run is not compared" "$t/main.log"
+          grep -q "Compared with $f/expected.yaml: 3 change(s), 1 regression(s), 1 improvement(s)" "$t/main.log"
+          if grep -q zombie_handled "$t/main.out"; then echo "::error::a test failing as listed is a change"; exit 1; fi
+
+          # An entry without a status leaves its test uncompared, and the
+          # suite's warnings reach the job: a reason's | stays in its cell.
+          printf -- '- {test: zombie_handled, stauts: failed}\n- {test: liveness, status: failed}\n- {test: node_drain, status: failed, reason: "kubectl get pods | grep coredns"}\n' > "$t/typo.yaml"
+          compare "$t/typo.yaml" typo
+          grep -q "::warning::.*lists zombie_handled without a status of a results file .*: zombie_handled is not compared" "$t/typo.log"
+          grep -qx 'changed=node_drain' "$t/typo.out"
+          grep -qx 'regressions=' "$t/typo.out"
+          grep -qF '| `node_drain` | failed | **na** | changed; listed because: kubectl get pods \| grep coredns |' "$t/typo.md"
+
+          # What the suite refuses is a warning, and nothing is compared.
+          echo 'not: a list' > "$t/bad.yaml"
+          compare "$t/bad.yaml" bad
+          grep -q "::warning::cnti-testsuite compare refused: .*is not a YAML list of {test, status, reason}.*: the results are not compared" "$t/bad.log"
+          grep -qx 'regressions=' "$t/bad.out"
+          test ! -s "$t/bad.md"
+          compare "$t/missing.yaml" missing
+          grep -q "::warning::cnti-testsuite compare refused: .*is not a file.*: the results are not compared" "$t/missing.log"
+
+          compare "" none
+          grep -qx 'changed=' "$t/none.out"
+          test ! -s "$t/none.md"
+
+          # A released suite without `compare`: a warning, not a failure.
+          mkdir "$t/old"
+          printf '#!/bin/sh\n[ "$1" = help ] && { echo "Tasks: cert workload evidence"; exit 0; }\nexit 1\n' > "$t/old/cnti-testsuite"
+          chmod +x "$t/old/cnti-testsuite"
+          PATH="$t/old:$PATH" compare $f/expected.yaml old
+          grep -q "::warning::this cnti-testsuite has no 'compare' (it needs a release with lfn-cnti/testsuite#2872): the results are not compared" "$t/old.log"
+          grep -qx 'regressions=' "$t/old.out"
+          test ! -s "$t/old.md"
 
   # A suite without `cnti-testsuite evidence` (before v2.3.0) and a run that asks
   # for the badge: the action must fail, not skip the badge quietly.
