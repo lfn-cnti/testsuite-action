@@ -308,14 +308,14 @@ runs:
 
     - name: Create kind cluster
       if: inputs.create_kind_cluster == 'true' && inputs.kind_version == ''
-      uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+      uses: helm/kind-action@ea822c7bf1874f08e5a491df991c228edffc3376 # v1.15.2
       with:
         cluster_name: cnti-testsuite
         config: ${{ steps.kind.outputs.config }}
 
     - name: Create kind cluster (pinned kind version)
       if: inputs.create_kind_cluster == 'true' && inputs.kind_version != ''
-      uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+      uses: helm/kind-action@ea822c7bf1874f08e5a491df991c228edffc3376 # v1.15.2
       with:
         cluster_name: cnti-testsuite
         config: ${{ steps.kind.outputs.config }}
