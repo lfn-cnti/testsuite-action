@@ -424,6 +424,14 @@ With `openai-compatible`, `analyze_endpoint` points at any server that speaks
 no key and is the choice for code whose data must not leave your network. The self-test runs it
 against a small model in Ollama on the runner.
 
+Pick the model for the reading, not for the runner: a model of roughly 7B parameters or more, or a
+hosted one. A very small model keeps to the answer's format but misreads the facts of a real CNF:
+on the adopters' failures, a 1.5B model named tests that were never sent and left out the ones that
+were. The analysis flags part of it: a cause whose cited IDs are none of the recorded facts is
+marked unsupported, with low confidence, and a test the answer leaves out is named. It does not
+check that a cited fact supports the cause, so read the facts each cause cites before acting on it.
+The self-test's 1.5B model checks the plumbing only.
+
 - **When:** whenever a test failed or errored, also in a run that met its pass mark (a `cert`
   run at 16 of 19 has three failures worth reading), and only where the key is
   the repository's own: not on pull requests from forks, which get no secrets, and not under
