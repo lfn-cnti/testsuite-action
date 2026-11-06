@@ -60,8 +60,8 @@ Existing cluster (self-hosted runner with `$KUBECONFIG` set):
 |---|---|---|
 | `version` | `latest` | cnti-testsuite release tag, e.g. `v2.0.0` (v2.0.0 or newer; the badge and the evidence need v2.3.0 or newer, and a run that asks for them with an older suite fails) |
 | `binary_url` | | URL of a release tarball to install instead of `version`, e.g. a prerelease on a fork, to try a build before its release |
-| `attest` | `false` | attest the results file with GitHub artifact attestations, from the default branch (needs `id-token: write`, `attestations: write`) |
-| `evidence_oci_ref` | | chart or image reference in a registry to attach the signed evidence to (cosign attestation, keyless), from the default branch (needs `id-token: write` and push access) |
+| `attest` | `false` | attest the results file with GitHub artifact attestations, from the default branch and a run that reached a verdict (needs `id-token: write`, `attestations: write`) |
+| `evidence_oci_ref` | | chart or image reference in a registry to attach the signed evidence to (cosign attestation, keyless), from the default branch and a run that reached a verdict (needs `id-token: write` and push access) |
 | `evidence_oci_token`, `evidence_oci_username` | the job's token, the actor | registry login for `evidence_oci_ref`; the defaults work for ghcr.io with `packages: write` |
 | `cnf_config` | | Path to a `cnti-testsuite.yaml`; takes precedence over `helm_chart_dir` |
 | `helm_chart_dir` | | Local Helm chart directory; a minimal config is generated |
@@ -241,7 +241,13 @@ public page:
 With `attest: "true"` the action attests the results file with
 [GitHub artifact attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations):
 the statement's Test Result predicate, signed with the workflow's identity and stored by GitHub.
-A reader of the published bundle verifies it without access to your repository:
+As with the badge and the published bundle, only a run of the default branch that reached a
+verdict (exit code 0 or 1) is attested, here and in a registry (`evidence_oci_ref`): an errored or
+aborted run is not signed, and where it would have been (the default branch, with the evidence
+written) a notice says why. Verifying fetches the attestation from the
+repository that ran the job, so a reader needs read access to it: for a public repository that is
+anyone; for a private one, the published bundle alone does not carry the attestation (attach the
+evidence to a public chart in a registry with `evidence_oci_ref` for that):
 
 ```
 gh attestation verify cnti-testsuite-results-<timestamp>.yml \\
