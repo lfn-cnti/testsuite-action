@@ -30,9 +30,14 @@ fi
 cnti-testsuite "${args[@]}" > "$work/report.md" 2> /dev/null || skip "cnti-testsuite compare could not write its report"
 
 report() { yq -p json -r "$1" "$work/report.json"; }
-report '.warnings[] | "::warning::" + .'
+# An empty list still prints one empty line: skip it, rather than turn it into
+# an empty warning.
+while IFS= read -r w; do
+  [[ -n "$w" ]] && echo "::warning::$w"
+done < <(report '.warnings[]')
 # cut, not read: read would merge the tabs around an empty reason.
 while IFS= read -r line; do
+  [[ -n "$line" ]] || continue
   reason=$(cut -f5 <<< "$line")
   echo "::warning::$(cut -f1 <<< "$line"): expected $(cut -f2 <<< "$line"), now $(cut -f3 <<< "$line") ($(cut -f4 <<< "$line"))${reason:+; listed because: $reason}"
 done < <(report '.changes[] | [.test, .expected, .actual, .kind, .reason] | @tsv')

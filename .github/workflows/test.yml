@@ -36,7 +36,7 @@ jobs:
           # expected_results through the whole action: CoreDNS passes, so a test
           # listed as failing is an improvement, and on_regression: fail has no
           # regression to fail on.
-          - version: v2.4.0
+          - version: v2.4.1
             extra_args: ""
             expect_exit: "0"
             expected_results: .github/fixtures/expected/coredns.yaml
@@ -204,11 +204,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # The first release with `compare` and `analyze`.
-      - name: The suite (v2.4.0)
+      # The current release (`compare` and `analyze` are in v2.4.0 and later).
+      - name: The suite (v2.4.1)
         run: |
           mkdir -p "$RUNNER_TEMP/suite"
-          curl -sSfL --retry 3 https://github.com/lfn-cnti/testsuite/releases/download/v2.4.0/cnti-testsuite-v2.4.0.tar.gz \
+          curl -sSfL --retry 3 https://github.com/lfn-cnti/testsuite/releases/download/v2.4.1/cnti-testsuite-v2.4.1.tar.gz \
             | tar -xz -C "$RUNNER_TEMP/suite"
       - name: Check the comparison
         run: |
@@ -243,6 +243,13 @@ jobs:
           grep -qx 'changed=node_drain' "$t/typo.out"
           grep -qx 'regressions=' "$t/typo.out"
           grep -qF '| `node_drain` | failed | **na** | changed; listed because: kubectl get pods \| grep coredns |' "$t/typo.md"
+
+          # Every result as the file expects: no change, and not one warning.
+          printf -- '- {test: zombie_handled, status: failed}\n- {test: liveness, status: failed}\n- {test: node_drain, status: na}\n' > "$t/same.yaml"
+          compare "$t/same.yaml" same
+          grep -qx 'changed=' "$t/same.out"
+          if grep -q '::warning::' "$t/same.log"; then echo "::error::a warning without a difference"; exit 1; fi
+          grep -q "Compared with $t/same.yaml: 0 change(s), 0 regression(s), 0 improvement(s)" "$t/same.log"
 
           # What the suite refuses is a warning, and nothing is compared.
           echo 'not: a list' > "$t/bad.yaml"
@@ -350,11 +357,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # The first release with `compare` and `analyze`.
-      - name: The suite (v2.4.0)
+      # The current release (`compare` and `analyze` are in v2.4.0 and later).
+      - name: The suite (v2.4.1)
         run: |
           mkdir -p "$RUNNER_TEMP/suite"
-          curl -sSfL --retry 3 https://github.com/lfn-cnti/testsuite/releases/download/v2.4.0/cnti-testsuite-v2.4.0.tar.gz \
+          curl -sSfL --retry 3 https://github.com/lfn-cnti/testsuite/releases/download/v2.4.1/cnti-testsuite-v2.4.1.tar.gz \
             | tar -xz -C "$RUNNER_TEMP/suite"
       - name: Check the analysis
         env:
@@ -472,11 +479,11 @@ jobs:
       MODEL: qwen2.5:1.5b
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # The first release with `compare` and `analyze`.
-      - name: The suite (v2.4.0)
+      # The current release (`compare` and `analyze` are in v2.4.0 and later).
+      - name: The suite (v2.4.1)
         run: |
           mkdir -p "$RUNNER_TEMP/suite"
-          curl -sSfL --retry 3 https://github.com/lfn-cnti/testsuite/releases/download/v2.4.0/cnti-testsuite-v2.4.0.tar.gz \
+          curl -sSfL --retry 3 https://github.com/lfn-cnti/testsuite/releases/download/v2.4.1/cnti-testsuite-v2.4.1.tar.gz \
             | tar -xz -C "$RUNNER_TEMP/suite"
       - name: Start Ollama with a small model
         run: |
