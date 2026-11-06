@@ -29,7 +29,7 @@ suite "${args[@]}" > "$dir/prepare.log" 2>&1
 rc=$?
 grep -E '^(note|Request|No test)' "$dir/prepare.log" || true
 if [[ $rc -ne 0 ]]; then
-  if ! suite help 2>/dev/null | grep -qw analyze; then
+  if ! suite help 2>/dev/null | grep -w analyze >/dev/null; then
     skip "this cnti-testsuite has no 'analyze' (it needs v2.4.0 or later)"
   fi
   skip "cnti-testsuite analyze prepare refused: $(grep -v '^\[' "$dir/prepare.log" | tail -3 | tr '\n' ' ' | head -c 400)"

@@ -24,9 +24,9 @@ if [[ ! -d "${EVIDENCE_DIR:-}" || ! -f "$EVIDENCE_DIR/cnti-badge.svg" ]]; then
   exit 0
 fi
 
-default_branch=$(gh api "repos/${GITHUB_REPOSITORY}" --jq .default_branch 2>/dev/null || true)
-if [[ -z "$default_branch" || "${GITHUB_REF_NAME:-}" != "$default_branch" ]]; then
-  echo "Evidence not published: ${GITHUB_REF_NAME:-?} is not the default branch (${default_branch:-unknown})"
+# The action's branch step decides (scripts/default_branch.sh).
+if [[ "${ON_DEFAULT_BRANCH:-}" != "true" ]]; then
+  echo "Evidence not published: ${GITHUB_REF_NAME:-?} is not the default branch (${DEFAULT_BRANCH:-unknown})"
   exit 0
 fi
 

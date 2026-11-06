@@ -161,6 +161,57 @@ jobs:
 
   # The results and the evidence artifact under one name, or the results under
   # none: refused before the run, rather than failing an upload after it.
+  default-branch:
+    name: default branch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check how the default branch is decided
+        # No token: the API cases ask a local stand-in.
+        run: |
+          set -euo pipefail
+          db() { : > out.txt; env -u PAYLOAD_DEFAULT_BRANCH GITHUB_OUTPUT=out.txt "$@" bash scripts/default_branch.sh | tee log.txt; cat out.txt; }
+          # The payload names it.
+          db EVENT=push PAYLOAD_DEFAULT_BRANCH=main GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main
+          grep -qx 'on_default=true' out.txt; grep -qx 'default_branch=main' out.txt; grep -q 'from the event' log.txt
+          db EVENT=pull_request PAYLOAD_DEFAULT_BRANCH=main GITHUB_REF=refs/pull/36/merge GITHUB_REF_NAME=36/merge
+          grep -qx 'on_default=false' out.txt
+          # Not a tag named like it, nor pull_request_target, whose ref is the base branch.
+          db EVENT=push PAYLOAD_DEFAULT_BRANCH=main GITHUB_REF=refs/tags/main GITHUB_REF_NAME=main
+          grep -qx 'on_default=false' out.txt
+          db EVENT=pull_request_target PAYLOAD_DEFAULT_BRANCH=main GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main
+          grep -qx 'on_default=false' out.txt
+          # A schedule event's payload has no repository: the run is on the default branch.
+          db EVENT=schedule GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main GITHUB_API_URL=http://127.0.0.1:9
+          grep -qx 'on_default=true' out.txt; grep -q 'from a scheduled run' log.txt
+          # No branch in the payload otherwise: the API, with curl. A local
+          # stand-in answers: pretty-printed, compact, and a 404.
+          api=$(mktemp -d); mkdir -p "$api/repos/org"
+          printf '{\n  "name": "cnf",\n  "default_branch": "trunk",\n  "x": 1\n}\n' > "$api/repos/org/pretty"
+          printf '{"name":"cnf","default_branch":"trunk"}' > "$api/repos/org/compact"
+          (cd "$api" && exec python3 -m http.server 8765 --bind 127.0.0.1) > /dev/null 2>&1 &
+          for _ in $(seq 20); do curl -sf -o /dev/null http://127.0.0.1:8765/repos/org/compact && break; sleep 0.5; done
+          stub="GITHUB_API_URL=http://127.0.0.1:8765"
+          db EVENT=workflow_dispatch GITHUB_REF=refs/heads/trunk GITHUB_REF_NAME=trunk GITHUB_REPOSITORY=org/pretty $stub
+          grep -qx 'on_default=true' out.txt; grep -qx 'default_branch=trunk' out.txt; grep -q 'from the API' log.txt
+          db EVENT=workflow_dispatch GITHUB_REF=refs/heads/trunk GITHUB_REF_NAME=trunk GITHUB_REPOSITORY=org/compact $stub
+          grep -qx 'on_default=true' out.txt
+          db EVENT=workflow_dispatch GITHUB_REF=refs/heads/feature GITHUB_REF_NAME=feature GITHUB_REPOSITORY=org/compact $stub
+          grep -qx 'on_default=false' out.txt; grep -qx 'default_branch=trunk' out.txt
+          # Unknown: nothing is published, with a warning. A 404, and no answer.
+          db EVENT=workflow_dispatch GITHUB_REF=refs/heads/trunk GITHUB_REF_NAME=trunk GITHUB_REPOSITORY=org/missing $stub
+          grep -qx 'on_default=false' out.txt; grep -q '::warning::The default branch is unknown' log.txt
+          db EVENT=workflow_dispatch GITHUB_REF=refs/heads/trunk GITHUB_REF_NAME=trunk GITHUB_REPOSITORY=org/compact GITHUB_API_URL=http://127.0.0.1:9
+          grep -qx 'on_default=false' out.txt; grep -q '::warning::The default branch is unknown' log.txt
+          # Nothing asks gh: a self-hosted runner may have none.
+          if grep -n 'gh api' scripts/*.sh; then echo "::error::a script still calls gh api"; exit 1; fi
+          # The publishers follow the step.
+          d=$(mktemp -d); echo '<svg/>' > "$d/cnti-badge.svg"; echo '{"label":"CNTi essential","message":"passed"}' > "$d/cnti-badge.json"
+          RUN_EXIT_CODE=0 BADGE_SOURCE_DIR="$d" BADGE_BRANCH=badges GITHUB_REF_NAME=main ON_DEFAULT_BRANCH=false DEFAULT_BRANCH=trunk bash scripts/publish_badge.sh | tee log.txt
+          grep -q 'Badge not published: main is not the default branch (trunk)' log.txt
+
   same-artifact-names:
     name: artifact names (${{ matrix.case }}, fails)
     runs-on: ubuntu-latest
