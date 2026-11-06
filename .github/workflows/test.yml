@@ -18,16 +18,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Each job's artifacts under their own names (artifact_name, and the
+          # evidence artifact named after it).
           - version: latest
             extra_args: ""
             expect_exit: "0"
+            artifact: coredns-latest
           - version: v2.0.0
             extra_args: ""
             expect_exit: "0"
+            artifact: coredns-v2.0.0
           # --strict stops at the first failed test: exercises the exit-1 path
           - version: latest
             extra_args: --strict
             expect_exit: "1"
+            artifact: coredns-latest-strict
           # expected_results through the whole action: CoreDNS passes, so a test
           # listed as failing is an improvement, and on_regression: fail has no
           # regression to fail on.
@@ -35,6 +40,7 @@ jobs:
             extra_args: ""
             expect_exit: "0"
             expected_results: .github/fixtures/expected/coredns.yaml
+            artifact: coredns-expected
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Fetch example CNF
@@ -54,6 +60,13 @@ jobs:
           fail_on_failure: false
           expected_results: ${{ matrix.expected_results || '' }}
           on_regression: fail
+          artifact_name: ${{ matrix.artifact }}
+          # On pull requests, where nothing is published, the expected_results
+          # job bundles two hidden extra files: one allowed, one withheld.
+          evidence_repository: ${{ matrix.expected_results && github.event_name == 'pull_request' && github.repository || '' }}
+          evidence_files: |
+            .github/fixtures/expected/coredns.yaml
+            .github/fixtures/expected/.credential-sample.txt
       - name: Check outputs
         run: |
           echo "status=${{ steps.cnti.outputs.status }} exit=${{ steps.cnti.outputs.exit_code }}"
@@ -65,6 +78,122 @@ jobs:
             test "${{ steps.cnti.outputs.improvements }}" = "liveness"
             test -z "${{ steps.cnti.outputs.regressions }}"
           fi
+      # The evidence alone, named after artifact_name: the bundle, without the
+      # run's logs and diagnostics.
+      - name: Download the evidence artifact
+        if: matrix.expected_results
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: coredns-expected-evidence
+          path: ${{ runner.temp }}/evidence
+      - name: Check the evidence artifact
+        if: matrix.expected_results
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/evidence"
+          find . -type f | sort
+          test -f cnti-evidence.json
+          test -f cnti-badge.svg
+          test -f cnti-badge.json
+          # Exactly one results file and one JUnit report.
+          shopt -s nullglob
+          results=(cnti-testsuite-results-*.yml)
+          junit=(cnti-testsuite-results-*.xml)
+          test "${#results[@]}" -eq 1
+          test "${#junit[@]}" -eq 1
+          if [[ "${{ github.event_name }}" == pull_request ]]; then
+            # The allowed hidden file is in the artifact, the withheld one not.
+            cmp .github/fixtures/expected/coredns.yaml "$GITHUB_WORKSPACE/.github/fixtures/expected/coredns.yaml"
+            test ! -e .github/fixtures/expected/.credential-sample.txt
+            jq -e '.predicate.cnti.published_files == [".github/fixtures/expected/coredns.yaml"] and .predicate.cnti.withheld_files == [".github/fixtures/expected/.credential-sample.txt"]' cnti-evidence.json
+          fi
+          if find . -name '*.log' -o -name diagnostics | grep -q .; then echo "::error::logs or diagnostics in the evidence artifact"; exit 1; fi
+
+  # The extra files of a published bundle: copied with their paths (a hidden
+  # one too), an excluded one withheld, and none that would replace the
+  # bundle's own files or point outside the bundle.
+  complete-statement:
+    name: complete statement
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check the extra files
+        run: |
+          set -euo pipefail
+          d=$(mktemp -d)/bundle; mkdir -p "$d"
+          echo '{"predicate": {"cnti": {"status": "passed"}}}' > "$d/cnti-evidence.json"
+          echo '<svg/>' > "$d/cnti-badge.svg"
+          echo '[]' > cnti-evidence.json
+          mkdir -p cnti-badge.svg && echo extra > cnti-badge.svg/extra
+          echo 'token: s3cret' > my-secret.txt
+          ln -s /etc/hostname link-out.txt
+          ln -s .github/dependabot.yml link-in.yml
+          : > out1.txt
+          GITHUB_OUTPUT=out1.txt EVIDENCE_DIR="$d" EVIDENCE_REPOSITORY=org/evidence EVIDENCE_EXCLUDE='*secret*' GITHUB_REPOSITORY=org/cnf GITHUB_RUN_ID=1 \
+            EVIDENCE_FILES=$'.github/dependabot.yml\ncnti-evidence.json\n../etc/passwd\n/etc/hostname\nmy-secret.txt\nmissing.yaml\ncnti-badge.svg/extra\nlink-out.txt\nlink-in.yml' \
+            bash scripts/complete_statement.sh | tee log.txt
+          jq . "$d/cnti-evidence.json"
+          jq -e '.predicate.cnti.status == "passed"' "$d/cnti-evidence.json"
+          jq -e '.predicate.cnti.published_files == [".github/dependabot.yml", "link-in.yml"]' "$d/cnti-evidence.json"
+          jq -e '.predicate.cnti.withheld_files == ["my-secret.txt"]' "$d/cnti-evidence.json"
+          cmp .github/dependabot.yml "$d/.github/dependabot.yml"
+          test ! -e "$d/my-secret.txt"
+          test ! -e "$(dirname "$d")/etc/passwd"
+          grep -q "'cnti-evidence.json' would replace the bundle's own cnti-evidence.json, skipped" log.txt
+          grep -q "'../etc/passwd' is outside the workspace, skipped" log.txt
+          grep -q "'/etc/hostname' is outside the workspace, skipped" log.txt
+          grep -q "'missing.yaml' not found, skipped" log.txt
+          grep -q "'cnti-badge.svg/extra' could not be copied into the bundle, skipped" log.txt
+          test "$(cat "$d/cnti-badge.svg")" = '<svg/>'
+          grep -q "'link-out.txt' leads outside the workspace (/etc/hostname), skipped" log.txt
+          test ! -e "$d/link-out.txt"
+          cmp .github/dependabot.yml "$d/link-in.yml"
+          grep -q "Statement completed: .*, 2 extra file(s) in the bundle, 1 withheld" log.txt
+          grep -qx 'completed=true' out1.txt
+          # A statement that is not JSON: a warning, and the file as it was.
+          echo 'not json' > "$d/cnti-evidence.json"
+          : > out2.txt
+          GITHUB_OUTPUT=out2.txt EVIDENCE_DIR="$d" GITHUB_REPOSITORY=org/cnf GITHUB_RUN_ID=1 bash scripts/complete_statement.sh | tee log2.txt
+          grep -q "the statement could not be completed; it is neither signed, uploaded on its own nor published" log2.txt
+          test ! -s out2.txt
+          test "$(cat "$d/cnti-evidence.json")" = "not json"
+          test ! -e "$d/cnti-evidence.json.tmp"
+
+  # The results and the evidence artifact under one name, or the results under
+  # none: refused before the run, rather than failing an upload after it.
+  same-artifact-names:
+    name: artifact names (${{ matrix.case }}, fails)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - case: same
+            artifact_name: same
+            evidence_artifact_name: same
+          - case: empty
+            artifact_name: ""
+            evidence_artifact_name: ""
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run action
+        id: cnti
+        continue-on-error: true
+        uses: ./
+        with:
+          helm_chart_dir: .
+          artifact_name: ${{ matrix.artifact_name }}
+          evidence_artifact_name: ${{ matrix.evidence_artifact_name }}
+      - name: The run must have stopped at the names
+        env:
+          OUTCOME: ${{ steps.cnti.outcome }}
+          CONFIG_ERROR: ${{ steps.cnti.outputs.config_error }}
+          RESULTS_FILE: ${{ steps.cnti.outputs.results_file }}
+        run: |
+          test "$OUTCOME" = failure
+          # Stopped by the name check, before the suite ran.
+          test "$CONFIG_ERROR" = artifact_names
+          test -z "$RESULTS_FILE"
 
   # The wrapper around the suite's comparison, on a results file and an
   # expectations file of every kind of difference, on the files the suite
@@ -397,6 +526,7 @@ jobs:
           version: v2.2.0
           cnf_config: testsuite/example-cnfs/coredns/cnti-testsuite.yaml
           badge_branch: badges-selftest-old-suite
+          artifact_name: old-suite-badge
           fail_on_failure: false
       - name: The run must have failed on the missing evidence subcommand
         run: |
@@ -433,6 +563,7 @@ jobs:
           evidence_token: ${{ github.token }}
           evidence_branch: evidence-selftest
           attest: "true"
+          artifact_name: coredns-evidence-publishing
       - name: Verify the attestation
         env:
           GH_TOKEN: ${{ github.token }}

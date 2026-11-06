@@ -63,13 +63,17 @@ inputs:
     required: false
     default: "true"
   upload_results:
-    description: "Upload the results directory and the evidence bundle (cnti/evidence, when written) as a workflow artifact, so every run's full evidence can be downloaded from the run page for the artifact retention period, badge or no badge."
+    description: "Upload the results directory and the evidence bundle (cnti/evidence, when written) as a workflow artifact, so every run's full evidence can be downloaded from the run page for the artifact retention period, badge or no badge; and the evidence bundle alone as a second artifact (evidence_artifact_name)."
     required: false
     default: "true"
   artifact_name:
     description: "Name of the uploaded results artifact."
     required: false
     default: "cnti-testsuite-results"
+  evidence_artifact_name:
+    description: "Name of the artifact with the evidence bundle alone (the statement, the badge, the results file and its JUnit report, the CNF's configuration), without the run's logs and diagnostics, uploaded from a run that reached a verdict (exit code 0 or 1) once its statement is complete; otherwise the evidence stays in the results artifact only. Must differ from artifact_name. Default: cnti-evidence while artifact_name is cnti-testsuite-results (its default), <artifact_name>-evidence for any other artifact_name."
+    required: false
+    default: ""
   badge_branch:
     description: "Publish the badge (cnti-badge.svg and cnti-badge.json in shields.io endpoint format, written by cnti-testsuite evidence, v2.3.0 or newer) to this orphan branch of the repository with the job's GITHUB_TOKEN - no secret needed, but the job needs 'permissions: contents: write'. Only runs on the default branch. Empty: off."
     required: false
@@ -218,10 +222,31 @@ outputs:
   changed:
     description: "Comma-separated tests whose result differs from expected_results in any way, regressions and improvements included."
     value: ${{ steps.expected.outputs.changed }}
+  config_error:
+    description: "Set when the action refused its inputs before the run: artifact_names (artifact_name empty, or evidence_artifact_name equal to it). Empty otherwise."
+    value: ${{ steps.names.outputs.config_error }}
 
 runs:
   using: "composite"
   steps:
+    # Two artifacts of one job need two names, and neither can be empty: an
+    # upload under no name, or under the other's, fails after the run, so
+    # refuse it before.
+    - name: Check the artifact names
+      id: names
+      if: inputs.upload_results == 'true' && (inputs.artifact_name == '' || (inputs.evidence_artifact_name != '' && inputs.evidence_artifact_name == inputs.artifact_name))
+      shell: bash
+      env:
+        NAME: ${{ inputs.artifact_name }}
+      run: |
+        echo "config_error=artifact_names" >> "$GITHUB_OUTPUT"
+        if [[ -z "$NAME" ]]; then
+          echo "::error::artifact_name is empty: the results artifact needs a name (the default is cnti-testsuite-results; upload_results: false uploads nothing)"
+        else
+          echo "::error::evidence_artifact_name and artifact_name are both '$NAME': the results and the evidence are two artifacts and need two names"
+        fi
+        exit 1
+
     - name: Resolve cnti-testsuite version
       id: version
       shell: bash
@@ -523,6 +548,7 @@ runs:
     # Everything the statement records goes in before anything signs or publishes
     # it, so the published statement is the signed one.
     - name: Complete statement
+      id: complete
       if: always() && steps.evidence.outputs.dir != ''
       shell: bash
       env:
@@ -547,7 +573,7 @@ runs:
         echo "::notice::Evidence not signed (attest, evidence_oci_ref): the run did not complete with a verdict (exit code '${RC:-none}')"
 
     - name: Plan registry attestation
-      if: always() && inputs.evidence_oci_ref != '' && steps.evidence.outputs.dir != '' && github.ref_name == github.event.repository.default_branch && (steps.run.outputs.exit_code == '0' || steps.run.outputs.exit_code == '1')
+      if: always() && inputs.evidence_oci_ref != '' && steps.evidence.outputs.dir != '' && github.ref_name == github.event.repository.default_branch && (steps.run.outputs.exit_code == '0' || steps.run.outputs.exit_code == '1') && steps.complete.outputs.completed == 'true'
       shell: bash
       env:
         DIR: ${{ steps.evidence.outputs.dir }}
@@ -572,7 +598,7 @@ runs:
     # resets the block to method none and never fails the run.
     - name: Prepare attestation
       id: attest_input
-      if: always() && inputs.attest == 'true' && steps.evidence.outputs.dir != '' && github.ref_name == github.event.repository.default_branch && (steps.run.outputs.exit_code == '0' || steps.run.outputs.exit_code == '1')
+      if: always() && inputs.attest == 'true' && steps.evidence.outputs.dir != '' && github.ref_name == github.event.repository.default_branch && (steps.run.outputs.exit_code == '0' || steps.run.outputs.exit_code == '1') && steps.complete.outputs.completed == 'true'
       shell: bash
       env:
         DIR: ${{ steps.evidence.outputs.dir }}
@@ -621,12 +647,12 @@ runs:
     # the way the suite's sbom_available test reads SBOM attestations. Only from the
     # default branch; a failure leaves the bundle as it is, never fails the run.
     - name: Install cosign
-      if: always() && inputs.evidence_oci_ref != '' && steps.evidence.outputs.dir != '' && github.ref_name == github.event.repository.default_branch && (steps.run.outputs.exit_code == '0' || steps.run.outputs.exit_code == '1')
+      if: always() && inputs.evidence_oci_ref != '' && steps.evidence.outputs.dir != '' && github.ref_name == github.event.repository.default_branch && (steps.run.outputs.exit_code == '0' || steps.run.outputs.exit_code == '1') && steps.complete.outputs.completed == 'true'
       uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
 
     - name: Attach evidence to the chart
       id: oci
-      if: always() && inputs.evidence_oci_ref != '' && steps.evidence.outputs.dir != '' && github.ref_name == github.event.repository.default_branch && (steps.run.outputs.exit_code == '0' || steps.run.outputs.exit_code == '1')
+      if: always() && inputs.evidence_oci_ref != '' && steps.evidence.outputs.dir != '' && github.ref_name == github.event.repository.default_branch && (steps.run.outputs.exit_code == '0' || steps.run.outputs.exit_code == '1') && steps.complete.outputs.completed == 'true'
       shell: bash
       env:
         DIR: ${{ steps.evidence.outputs.dir }}
@@ -709,6 +735,21 @@ runs:
           ${{ steps.analyze.outputs.file }}
         if-no-files-found: ignore
 
+    # The evidence alone, as it is published: one download for whoever
+    # checks the badge, without the logs and the diagnostics. Like the badge
+    # and the published bundle, only from a run that reached a verdict: an
+    # errored or aborted run keeps its evidence in the results artifact only.
+    - name: Upload the evidence bundle
+      if: always() && inputs.upload_results == 'true' && steps.evidence.outputs.dir != '' && (steps.run.outputs.exit_code == '0' || steps.run.outputs.exit_code == '1') && steps.complete.outputs.completed == 'true'
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ inputs.evidence_artifact_name != '' && inputs.evidence_artifact_name || (inputs.artifact_name == 'cnti-testsuite-results' && 'cnti-evidence' || format('{0}-evidence', inputs.artifact_name)) }}
+        path: ${{ steps.evidence.outputs.dir }}/
+        # The bundle holds only what is published: an evidence_files entry
+        # under .github/ belongs in it as much as any other.
+        include-hidden-files: true
+        if-no-files-found: ignore
+
     - name: Publish badge
       if: always() && inputs.badge_branch != '' && steps.evidence.outputs.dir != ''
       shell: bash
@@ -745,7 +786,7 @@ runs:
         logoSvg: ${{ steps.gist_logo.outputs.svg }}
 
     - name: Publish evidence
-      if: always() && inputs.evidence_repository != '' && steps.evidence.outputs.dir != ''
+      if: always() && inputs.evidence_repository != '' && steps.evidence.outputs.dir != '' && steps.complete.outputs.completed == 'true'
       shell: bash
       env:
         EVIDENCE_DIR: ${{ steps.evidence.outputs.dir }}

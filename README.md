@@ -6,7 +6,7 @@ cloud native best practices.
 
 By default the action creates a 3-node [kind](https://kind.sigs.k8s.io/) cluster, installs the
 latest `cnti-testsuite` release (v2.0.0 or newer), deploys your CNF and runs the essential test set (the `cert` task).
-It writes a job summary, annotates failed tests, uploads the results and the evidence bundle as an artifact and
+It writes a job summary, annotates failed tests, uploads the results and the evidence bundle as an artifact, and the evidence bundle alone as a second one, and
 fails the job when the CNF does not meet the objective of the run (for the essential tests: 15 of 19 passed).
 
 ## Usage
@@ -86,8 +86,9 @@ Existing cluster (self-hosted runner with `$KUBECONFIG` set):
 | `analyze_comment` | `false` | Also post the analysis on the pull request (needs `pull-requests: write`) |
 | `expected_results` | | A YAML list of the results you know and accept (`{test, status, reason}`); every test that differs is reported (see [Expected results](#expected-results)) |
 | `on_regression` | `warn` | `fail` fails the job on a regression against `expected_results`, after the badge is published |
-| `upload_results` | `true` | Upload `cnti/results/` and `cnti/evidence/` as an artifact: every run's full evidence is downloadable from the run page, whether or not a badge or an evidence repository is set |
+| `upload_results` | `true` | Upload `cnti/results/` and `cnti/evidence/` as an artifact: every run's full evidence is downloadable from the run page, whether or not a badge or an evidence repository is set; and `cnti/evidence/` alone as a second artifact (`evidence_artifact_name`) |
 | `artifact_name` | `cnti-testsuite-results` | Artifact name |
+| `evidence_artifact_name` | `cnti-evidence` while `artifact_name` is `cnti-testsuite-results`, otherwise `<artifact_name>-evidence` | Name of a second artifact with the evidence bundle alone, without the logs and diagnostics, from a run that reached a verdict once its statement is complete (otherwise the evidence stays in the results artifact only); must differ from `artifact_name` |
 | `badge_branch` | | Publish `cnti-badge.svg`/`.json` to this orphan branch with `GITHUB_TOKEN` (needs `permissions: contents: write`); default branch only |
 | `badge_name` | | With `badge_branch`: publish to `<badge_name>/` on the branch and keep the rest of it, so several CNFs of one repository share one badge branch (see [Several CNFs in one repository](#several-cnfs-in-one-repository)) |
 | `gist_badge_id` | | Optional gist ID for a results badge on another repository |
@@ -107,6 +108,7 @@ One of `cnf_config` or `helm_chart_dir` is required.
 | `points` / `maximum_points` | Points scored / maximum |
 | `criteria` | Pass criterion of the run as compact JSON (e.g. the essential-tests threshold of `cert`); empty when the task has none |
 | `results_file` | Path to the results YAML |
+| `config_error` | Set when the action refused its inputs before the run: `artifact_names` (`artifact_name` empty, or `evidence_artifact_name` equal to it); empty otherwise |
 | `regressions` / `improvements` / `changed` | Comma-separated tests that differ from `expected_results`: failed or errored though expected to pass, skip or be n/a; passed though listed as not passing; any difference |
 
 ```yaml
@@ -208,7 +210,9 @@ repository you own, from runs of the default branch, with history:
   date, and the names of the files published and withheld;
 - `config/`: the `cnti-testsuite.yaml` the CNF was installed from and every values file it names,
   bundled by the suite itself, so a reader sees what was set on top of the chart's defaults;
-- any extra files you name in `evidence_files` (a README of the test setup, say).
+- any extra files you name in `evidence_files` (a README of the test setup, say), at their paths
+  in the workspace; an entry outside the workspace (a symlink to a target outside it too), or one
+  that would replace a file of the bundle above, is skipped with a warning.
 
 The bundle comes from the suite's own `cnti-testsuite evidence` (v2.3.0 or newer). Never published: the suite's
 logs (they stay in the job's artifact) and any file whose name matches `evidence_exclude`
